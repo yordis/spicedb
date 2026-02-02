@@ -118,10 +118,7 @@ func relationshipStringForHash(rel *v1.Relationship) (string, error) {
 	}
 
 	if rel.OptionalCaveat != nil && rel.OptionalCaveat.CaveatName != "" {
-		contextString, err := caveats.StableContextStringForHashing(rel.OptionalCaveat.Context)
-		if err != nil {
-			return "", err
-		}
+		contextString := caveats.StableContextStringForHashing(rel.OptionalCaveat.Context)
 		if len(contextString) > 0 {
 			contextString = ":" + contextString
 		}

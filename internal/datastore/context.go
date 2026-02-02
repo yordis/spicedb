@@ -2,6 +2,7 @@ package datastore
 
 import (
 	"context"
+	"time"
 
 	"github.com/authzed/spicedb/pkg/datastore"
 	"github.com/authzed/spicedb/pkg/datastore/options"
@@ -146,6 +147,14 @@ func (r *ctxReader) ReverseQueryRelationships(ctx context.Context, subjectsFilte
 
 func (r *ctxReader) SchemaReader() (datastore.SchemaReader, error) {
 	return r.delegate.SchemaReader()
+}
+
+func (p *ctxProxy) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	return p.delegate.CheckIdempotencyKey(context.WithoutCancel(ctx), idempotencyKey, requestHash)
+}
+
+func (p *ctxProxy) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
+	return p.delegate.StoreIdempotencyKey(context.WithoutCancel(ctx), idempotencyKey, requestHash, revision, ttl)
 }
 
 var (

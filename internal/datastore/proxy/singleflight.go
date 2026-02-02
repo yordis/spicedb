@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"time"
 
 	"resenje.org/singleflight"
 
@@ -85,6 +86,14 @@ func (p *singleflightProxy) OfflineFeatures() (*datastore.Features, error) {
 
 func (p *singleflightProxy) ReadyState(ctx context.Context) (datastore.ReadyState, error) {
 	return p.delegate.ReadyState(ctx)
+}
+
+func (p *singleflightProxy) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	return p.delegate.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+}
+
+func (p *singleflightProxy) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
+	return p.delegate.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ttl)
 }
 
 func (p *singleflightProxy) Close() error                { return p.delegate.Close() }

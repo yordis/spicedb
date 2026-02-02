@@ -506,7 +506,7 @@ func (err ReservedTransactionMetadataKeyError) GRPCStatus() *status.Status {
 		err,
 		codes.InvalidArgument,
 		spiceerrors.ForReason(
-			v1.ErrorReason_ERROR_REASON_INVALID_ARGUMENT,
+			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
 			map[string]string{
 				"message": "transaction metadata key is reserved",
 			},
@@ -564,7 +564,7 @@ func (err IdempotencyConflictError) GRPCStatus() *status.Status {
 		err,
 		codes.InvalidArgument,
 		spiceerrors.ForReason(
-			v1.ErrorReason_ERROR_REASON_INVALID_ARGUMENT,
+			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
 			map[string]string{
 				"message": "idempotency key already used with different request body",
 			},

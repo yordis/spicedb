@@ -2375,7 +2375,7 @@ func TestWriteRelationshipsIdempotencyBasic(t *testing.T) {
 	req := require.New(t)
 	ctx := context.Background()
 
-	conn, cleanup := testserver.NewTestServer(ctx, req, memdb.DisableGC)
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
 	defer cleanup()
 
 	client := v1.NewPermissionsServiceClient(conn)
@@ -2446,7 +2446,7 @@ func TestWriteRelationshipsIdempotencyConflict(t *testing.T) {
 	req := require.New(t)
 	ctx := context.Background()
 
-	conn, cleanup := testserver.NewTestServer(ctx, req, memdb.DisableGC)
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
 	defer cleanup()
 
 	client := v1.NewPermissionsServiceClient(conn)
@@ -2515,7 +2515,7 @@ func TestWriteRelationshipsIdempotencyKeyFormats(t *testing.T) {
 	req := require.New(t)
 	ctx := context.Background()
 
-	conn, cleanup := testserver.NewTestServer(ctx, req, memdb.DisableGC)
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
 	defer cleanup()
 
 	client := v1.NewPermissionsServiceClient(conn)
@@ -2569,7 +2569,7 @@ func TestWriteRelationshipsIdempotencyWithoutKey(t *testing.T) {
 	req := require.New(t)
 	ctx := context.Background()
 
-	conn, cleanup := testserver.NewTestServer(ctx, req, memdb.DisableGC)
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
 	defer cleanup()
 
 	client := v1.NewPermissionsServiceClient(conn)

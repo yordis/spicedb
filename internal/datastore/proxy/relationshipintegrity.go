@@ -298,6 +298,14 @@ func (r *relationshipIntegrityProxy) Unwrap() datastore.Datastore {
 	return r.ds
 }
 
+func (r *relationshipIntegrityProxy) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	return r.ds.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+}
+
+func (r *relationshipIntegrityProxy) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
+	return r.ds.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ttl)
+}
+
 type relationshipIntegrityReader struct {
 	parent  *relationshipIntegrityProxy
 	wrapped datastore.Reader

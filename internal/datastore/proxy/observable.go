@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -409,6 +410,14 @@ func observe(ctx context.Context, name string, queryShape string, opts ...trace.
 		timer.ObserveDuration()
 		span.End()
 	}
+}
+
+func (op *observableProxy) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	return op.delegate.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+}
+
+func (op *observableProxy) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
+	return op.delegate.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ttl)
 }
 
 var (

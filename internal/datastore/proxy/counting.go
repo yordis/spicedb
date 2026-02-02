@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -264,6 +265,14 @@ func (r *countingReader) LookupCounters(ctx context.Context) ([]datastore.Relati
 
 func (r *countingReader) SchemaReader() (datastore.SchemaReader, error) {
 	return r.delegate.SchemaReader()
+}
+
+func (p *countingDatastoreProxy) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	return p.fullDatastore.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+}
+
+func (p *countingDatastoreProxy) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
+	return p.fullDatastore.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ttl)
 }
 
 // Type assertions
