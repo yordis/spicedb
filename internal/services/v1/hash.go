@@ -2,6 +2,7 @@ package v1
 
 import (
 	"strconv"
+	"strings"
 
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -64,6 +65,24 @@ func computeLRRequestHash(req *v1.LookupResourcesRequest) (string, error) {
 		"subject":       tuple.V1StringSubjectRef(req.Subject),
 		"limit":         req.OptionalLimit,
 		"context":       req.Context,
+	})
+}
+
+func computeWriteRelationshipsRequestHash(req *v1.WriteRelationshipsRequest) (string, error) {
+	updateStrings := make([]string, len(req.Updates))
+	for i, update := range req.Updates {
+		updateStrings[i] = tuple.V1StringRelationshipWithoutCaveatOrExpiration(update.Relationship)
+	}
+
+	preconditionStrings := make([]string, len(req.OptionalPreconditions))
+	for i, precond := range req.OptionalPreconditions {
+		preconditionStrings[i] = precond.String()
+	}
+
+	return computeCallHash("v1.writerelationships", nil, map[string]any{
+		"updates":       strings.Join(updateStrings, ","),
+		"preconditions": strings.Join(preconditionStrings, ","),
+		"metadata":      req.OptionalTransactionMetadata,
 	})
 }
 

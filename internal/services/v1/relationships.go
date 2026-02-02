@@ -118,6 +118,14 @@ type PermissionsServerConfig struct {
 
 	// ExperimentalQueryPlan enables the experimental query plan for API calls.
 	ExperimentalQueryPlan bool
+
+	// IdempotencyKeyTTL is the duration to retain idempotency keys.
+	// Default: 24 hours.
+	IdempotencyKeyTTL time.Duration
+
+	// IdempotencyEnabled controls whether idempotency key support is enabled.
+	// Default: true (safe since it's opt-in via request field).
+	IdempotencyEnabled bool
 }
 
 // NewPermissionsServer creates a PermissionsServiceServer instance.
@@ -144,6 +152,8 @@ func NewPermissionsServer(
 		PerformanceInsightMetricsEnabled:   config.PerformanceInsightMetricsEnabled,
 		EnableExperimentalLookupResources3: config.EnableExperimentalLookupResources3,
 		ExperimentalQueryPlan:              config.ExperimentalQueryPlan,
+		IdempotencyKeyTTL:                  defaultIfZero(config.IdempotencyKeyTTL, 24*time.Hour),
+		IdempotencyEnabled:                 defaultIfZero(config.IdempotencyEnabled, true),
 	}
 
 	return &permissionServer{
@@ -325,6 +335,46 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	ds := datastoremw.MustFromContext(ctx)
 
 	span := trace.SpanFromContext(ctx)
+
+	var requestHash string
+	var idempotencyKey string
+
+	// Handle idempotency key if enabled and provided
+	if ps.config.IdempotencyEnabled && req.IdempotencyKey != "" {
+		var err error
+		requestHash, err = computeWriteRelationshipsRequestHash(req)
+		if err != nil {
+			return nil, ps.rewriteError(ctx, fmt.Errorf("failed to hash request: %w", err))
+		}
+
+		idempotencyKey = req.IdempotencyKey
+
+		// Check if this idempotency key was seen before
+		result, err := ds.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+		if err != nil {
+			return nil, ps.rewriteError(ctx, fmt.Errorf("failed to check idempotency key: %w", err))
+		}
+
+		if result != nil {
+			if result.RequestHash != requestHash {
+				idempotencyConflictCounter.Inc()
+				return nil, ps.rewriteError(ctx, NewIdempotencyConflictErr(idempotencyKey))
+			}
+
+			// Idempotency key found with matching hash - return cached result
+			idempotencyCacheHitCounter.Inc()
+			zedToken, err := zedtoken.NewFromRevision(ctx, result.Revision, ds)
+			if err != nil {
+				return nil, ps.rewriteError(ctx, err)
+			}
+
+			return &v1.WriteRelationshipsResponse{
+				WrittenAt: zedToken,
+			}, nil
+		}
+
+		idempotencyCacheMissCounter.Inc()
+	}
 	// Ensure that the updates and preconditions are not over the configured limits.
 	if len(req.Updates) > int(ps.config.MaxUpdatesPerWrite) {
 		return nil, ps.rewriteError(
@@ -432,6 +482,15 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	zedToken, err := zedtoken.NewFromRevision(ctx, revision, ds)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
+	}
+
+	// Store idempotency key if provided
+	if idempotencyKey != "" {
+		if err := ds.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ps.config.IdempotencyKeyTTL); err != nil {
+			idempotencyStoreErrorCounter.Inc()
+			// Don't fail the request, just log the error
+			span.AddEvent("idempotency_key_storage_failed")
+		}
 	}
 
 	return &v1.WriteRelationshipsResponse{
@@ -657,3 +716,33 @@ func labelsForFilter(filter *v1.RelationshipFilter) perfinsights.APIShapeLabels 
 		perfinsights.SubjectRelationLabel:  filter.OptionalSubjectFilter.OptionalRelation.Relation,
 	}
 }
+
+var (
+	idempotencyCacheHitCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "v1",
+		Name:      "idempotency_cache_hit_total",
+		Help:      "Total number of idempotency cache hits",
+	})
+
+	idempotencyCacheMissCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "v1",
+		Name:      "idempotency_cache_miss_total",
+		Help:      "Total number of idempotency cache misses",
+	})
+
+	idempotencyConflictCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "v1",
+		Name:      "idempotency_conflict_total",
+		Help:      "Total number of idempotency conflicts",
+	})
+
+	idempotencyStoreErrorCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "v1",
+		Name:      "idempotency_store_error_total",
+		Help:      "Total number of idempotency storage errors",
+	})
+)

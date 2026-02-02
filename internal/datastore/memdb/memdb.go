@@ -62,7 +62,7 @@ func NewMemdbDatastore(
 	}
 
 	uniqueID := uuid.NewString()
-	return &memdbDatastore{
+	mds := &memdbDatastore{
 		CommonDecoder: revisions.CommonDecoder{
 			Kind: revisions.Timestamp,
 		},
@@ -79,7 +79,9 @@ func NewMemdbDatastore(
 		watchBufferLength:       watchBufferLength,
 		watchBufferWriteTimeout: 100 * time.Millisecond,
 		uniqueID:                uniqueID,
-	}, nil
+	}
+	mds.initIdempotencyCache()
+	return mds, nil
 }
 
 type memdbDatastore struct {
@@ -96,6 +98,10 @@ type memdbDatastore struct {
 	watchBufferLength       uint16
 	watchBufferWriteTimeout time.Duration
 	uniqueID                string
+
+	// idempotency cache fields
+	idempotencyMutex sync.RWMutex
+	idempotencyCache map[string]idempotencyCacheEntry // GUARDED_BY(idempotencyMutex)
 }
 
 type snapshot struct {
