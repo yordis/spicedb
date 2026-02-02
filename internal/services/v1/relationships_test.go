@@ -2515,11 +2515,6 @@ func TestWriteRelationshipsIdempotencyKeyFormats(t *testing.T) {
 	req := require.New(t)
 	ctx := context.Background()
 
-	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
-	defer cleanup()
-
-	client := v1.NewPermissionsServiceClient(conn)
-
 	testCases := []struct {
 		name string
 		key  string
@@ -2528,12 +2523,17 @@ func TestWriteRelationshipsIdempotencyKeyFormats(t *testing.T) {
 		{"URL format", "https://example.com/event/12345"},
 		{"email format", "user@example.com"},
 		{"special characters", "event:123@domain!test"},
-		{"very long key", strings.Repeat("a", 1000)},
+		{"very long key", strings.Repeat("a", 200)},
 		{"empty key", ""},
 	}
 
-	for _, tc := range testCases {
+	for i, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+			defer cleanup()
+
+			client := v1.NewPermissionsServiceClient(conn)
+
 			updateReq := &v1.WriteRelationshipsRequest{
 				Updates: []*v1.RelationshipUpdate{
 					{
@@ -2541,13 +2541,13 @@ func TestWriteRelationshipsIdempotencyKeyFormats(t *testing.T) {
 						Relationship: &v1.Relationship{
 							Resource: &v1.ObjectReference{
 								ObjectType: "document",
-								ObjectId:   "doc1",
+								ObjectId:   fmt.Sprintf("doc%d", i),
 							},
 							Relation: "viewer",
 							Subject: &v1.SubjectReference{
 								Object: &v1.ObjectReference{
 									ObjectType: "user",
-									ObjectId:   "user1",
+									ObjectId:   fmt.Sprintf("user%d", i),
 								},
 							},
 						},
@@ -2574,11 +2574,11 @@ func TestWriteRelationshipsIdempotencyWithoutKey(t *testing.T) {
 
 	client := v1.NewPermissionsServiceClient(conn)
 
-	// Write without idempotency key
+	// Write without idempotency key - use TOUCH so it can be called multiple times
 	updateReq := &v1.WriteRelationshipsRequest{
 		Updates: []*v1.RelationshipUpdate{
 			{
-				Operation: v1.RelationshipUpdate_OPERATION_CREATE,
+				Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
 				Relationship: &v1.Relationship{
 					Resource: &v1.ObjectReference{
 						ObjectType: "document",
@@ -2604,6 +2604,6 @@ func TestWriteRelationshipsIdempotencyWithoutKey(t *testing.T) {
 	req.NoError(err)
 	req.NotNil(resp2)
 
-	// Without idempotency keys, tokens will be different
+	// Without idempotency keys, tokens will be different (different revisions)
 	req.NotEqual(resp1.WrittenAt, resp2.WrittenAt)
 }

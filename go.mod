@@ -17,8 +17,8 @@ replace github.com/influxdata/tdigest => github.com/hdrodz/tdigest v0.0.0-202304
 // See https://github.com/ory/dockertest/issues/614 and https://pkg.go.dev/vuln/GO-2025-3829
 replace github.com/docker/docker => github.com/docker/docker v28.0.0+incompatible
 
-// Use fork with idempotency_key field support
-replace github.com/authzed/authzed-go => github.com/yordis/authzed-go v0.0.0-20260202022251-bd0409e83c0b
+// Use local authzed-go with idempotency_key field support
+replace github.com/authzed/authzed-go => ../authzed-go
 
 require (
 	buf.build/gen/go/prometheus/prometheus/protocolbuffers/go v1.36.10-20251118093737-4105057cc7d4.1
