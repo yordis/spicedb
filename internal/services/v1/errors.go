@@ -475,11 +475,43 @@ func defaultIfZero[T comparable](value T, defaultValue T) T {
 	return value
 }
 
+
 // TransactionMetadataTooLargeError indicates that the metadata for a transaction is too large.
 type TransactionMetadataTooLargeError struct {
 	error
 	metadataSize int
 	maxSize      int
+}
+
+// ReservedTransactionMetadataKeyError indicates a reserved metadata key was provided by the caller.
+type ReservedTransactionMetadataKeyError struct {
+	error
+	key string
+}
+
+// NewReservedTransactionMetadataKeyErr constructs a new reserved metadata key error.
+func NewReservedTransactionMetadataKeyErr(key string) ReservedTransactionMetadataKeyError {
+	return ReservedTransactionMetadataKeyError{
+		error: fmt.Errorf("transaction metadata key %q is reserved", key),
+		key:   key,
+	}
+}
+
+func (err ReservedTransactionMetadataKeyError) MarshalZerologObject(e *zerolog.Event) {
+	e.Err(err.error).Str("metadata_key", err.key)
+}
+
+func (err ReservedTransactionMetadataKeyError) GRPCStatus() *status.Status {
+	return spiceerrors.WithCodeAndDetails(
+		err,
+		codes.InvalidArgument,
+		spiceerrors.ForReason(
+			v1.ErrorReason_ERROR_REASON_INVALID_ARGUMENT,
+			map[string]string{
+				"message": "transaction metadata key is reserved",
+			},
+		),
+	)
 }
 
 // NewTransactionMetadataTooLargeErr constructs a new transaction metadata too large error.

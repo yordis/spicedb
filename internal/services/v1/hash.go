@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -71,19 +72,71 @@ func computeLRRequestHash(req *v1.LookupResourcesRequest) (string, error) {
 func computeWriteRelationshipsRequestHash(req *v1.WriteRelationshipsRequest) (string, error) {
 	updateStrings := make([]string, len(req.Updates))
 	for i, update := range req.Updates {
-		updateStrings[i] = tuple.V1StringRelationshipWithoutCaveatOrExpiration(update.Relationship)
+		updateString, err := writeUpdateStringForHash(update)
+		if err != nil {
+			return "", err
+		}
+		updateStrings[i] = updateString
 	}
+	sort.Strings(updateStrings)
 
 	preconditionStrings := make([]string, len(req.OptionalPreconditions))
 	for i, precond := range req.OptionalPreconditions {
 		preconditionStrings[i] = precond.String()
 	}
+	sort.Strings(preconditionStrings)
 
 	return computeCallHash("v1.writerelationships", nil, map[string]any{
 		"updates":       strings.Join(updateStrings, ","),
 		"preconditions": strings.Join(preconditionStrings, ","),
 		"metadata":      req.OptionalTransactionMetadata,
 	})
+}
+
+func writeUpdateStringForHash(update *v1.RelationshipUpdate) (string, error) {
+	if update == nil {
+		return "", nil
+	}
+
+	relString, err := relationshipStringForHash(update.Relationship)
+	if err != nil {
+		return "", err
+	}
+
+	opName := v1.RelationshipUpdate_Operation_name[int32(update.Operation)]
+	return opName + ":" + relString, nil
+}
+
+func relationshipStringForHash(rel *v1.Relationship) (string, error) {
+	if rel == nil || rel.Resource == nil || rel.Subject == nil {
+		return "", nil
+	}
+
+	relationship := tuple.V1StringRelationshipWithoutCaveatOrExpiration(rel)
+	if relationship == "" {
+		return "", nil
+	}
+
+	if rel.OptionalCaveat != nil && rel.OptionalCaveat.CaveatName != "" {
+		contextString, err := caveats.StableContextStringForHashing(rel.OptionalCaveat.Context)
+		if err != nil {
+			return "", err
+		}
+		if len(contextString) > 0 {
+			contextString = ":" + contextString
+		}
+		relationship += "[" + rel.OptionalCaveat.CaveatName + contextString + "]"
+	}
+
+	if rel.OptionalExpiresAt != nil {
+		expirationString, err := tuple.V1StringExpiration(rel.OptionalExpiresAt)
+		if err != nil {
+			return "", err
+		}
+		relationship += expirationString
+	}
+
+	return relationship, nil
 }
 
 func computeCallHash(apiName string, consistency *v1.Consistency, arguments map[string]any) (string, error) {

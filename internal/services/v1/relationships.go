@@ -338,6 +338,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 
 	var requestHash string
 	var idempotencyKey string
+	metadataForWrite := req.OptionalTransactionMetadata
 
 	// Handle idempotency key if enabled and provided
 	if ps.config.IdempotencyEnabled && req.IdempotencyKey != "" {
@@ -363,7 +364,15 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 
 			// Idempotency key found with matching hash - return cached result
 			idempotencyCacheHitCounter.Inc()
-			zedToken, err := zedtoken.NewFromRevision(ctx, result.Revision, ds)
+			revision := result.Revision
+			if revision == datastore.NoRevision {
+				revision, err = ds.HeadRevision(ctx)
+				if err != nil {
+					return nil, ps.rewriteError(ctx, err)
+				}
+			}
+
+			zedToken, err := zedtoken.NewFromRevision(ctx, revision, ds)
 			if err != nil {
 				return nil, ps.rewriteError(ctx, err)
 			}
@@ -374,6 +383,18 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		}
 
 		idempotencyCacheMissCounter.Inc()
+
+		metadataForWrite, err = mergeTransactionMetadata(req.OptionalTransactionMetadata, map[string]string{
+			datastore.IdempotencyKeyMetadataKey:         idempotencyKey,
+			datastore.IdempotencyRequestHashMetadataKey: requestHash,
+		})
+		if err != nil {
+			return nil, ps.rewriteError(ctx, err)
+		}
+
+		if err := ps.validateTransactionMetadata(metadataForWrite); err != nil {
+			return nil, ps.rewriteError(ctx, err)
+		}
 	}
 	// Ensure that the updates and preconditions are not over the configured limits.
 	if len(req.Updates) > int(ps.config.MaxUpdatesPerWrite) {
@@ -463,7 +484,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		errWrite := rwt.WriteRelationships(ctx, relUpdates)
 		span.AddEvent(otelconv.EventRelationshipsWritten)
 		return errWrite
-	}, options.WithMetadata(req.OptionalTransactionMetadata), options.WithIncludesExpiredAt(includesExpiresAt))
+	}, options.WithMetadata(metadataForWrite), options.WithIncludesExpiredAt(includesExpiresAt))
 	span.AddEvent(otelconv.EventRelationshipsReadWriteExecuted)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
@@ -513,6 +534,31 @@ func (ps *permissionServer) validateTransactionMetadata(metadata *structpb.Struc
 	}
 
 	return nil
+}
+
+func mergeTransactionMetadata(base *structpb.Struct, extra map[string]string) (*structpb.Struct, error) {
+	if base == nil && len(extra) == 0 {
+		return nil, nil
+	}
+
+	var merged *structpb.Struct
+	if base == nil {
+		merged = &structpb.Struct{Fields: map[string]*structpb.Value{}}
+	} else {
+		merged = proto.Clone(base).(*structpb.Struct)
+		if merged.Fields == nil {
+			merged.Fields = map[string]*structpb.Value{}
+		}
+	}
+
+	for key, value := range extra {
+		if _, exists := merged.Fields[key]; exists {
+			return nil, NewReservedTransactionMetadataKeyErr(key)
+		}
+		merged.Fields[key] = structpb.NewStringValue(value)
+	}
+
+	return merged, nil
 }
 
 func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.DeleteRelationshipsRequest) (*v1.DeleteRelationshipsResponse, error) {

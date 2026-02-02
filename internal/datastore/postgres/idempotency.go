@@ -19,7 +19,7 @@ func (pgd *pgDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey,
 	).
 		From(schema.TableTransaction).
 		Where(sq.And{
-			sq.Expr("(metadata->>'idempotency_key') = ?", idempotencyKey),
+			sq.Expr("(metadata->>?) = ?", datastore.IdempotencyKeyMetadataKey, idempotencyKey),
 		}).
 		OrderBy(schema.ColTimestamp + " DESC").
 		Limit(1)
@@ -48,7 +48,7 @@ func (pgd *pgDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey,
 		return nil, err
 	}
 
-	storedHash, ok := metadataMap["request_hash"].(string)
+	storedHash, ok := metadataMap[datastore.IdempotencyRequestHashMetadataKey].(string)
 	if !ok {
 		return nil, nil
 	}
