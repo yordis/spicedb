@@ -12,6 +12,7 @@ import (
 	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -127,7 +128,8 @@ type PermissionsServerConfig struct {
 
 	// IdempotencyEnabled controls whether idempotency key support is enabled.
 	// Default: true (safe since it's opt-in via request field).
-	IdempotencyEnabled bool
+	// Use pointer to distinguish between "not set" (nil, default true) and "explicitly false".
+	IdempotencyEnabled *bool
 }
 
 // NewPermissionsServer creates a PermissionsServiceServer instance.
@@ -155,7 +157,7 @@ func NewPermissionsServer(
 		EnableExperimentalLookupResources3: config.EnableExperimentalLookupResources3,
 		ExperimentalQueryPlan:              config.ExperimentalQueryPlan,
 		IdempotencyKeyTTL:                  defaultIfZero(config.IdempotencyKeyTTL, 24*time.Hour),
-		IdempotencyEnabled:                 defaultIfZero(config.IdempotencyEnabled, true),
+		IdempotencyEnabled:                 boolPtrDefault(config.IdempotencyEnabled, true),
 	}
 
 	return &permissionServer{
@@ -343,7 +345,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	metadataForWrite := req.OptionalTransactionMetadata
 
 	// Handle idempotency key if enabled and provided
-	if ps.config.IdempotencyEnabled && req.IdempotencyKey != "" {
+	if *ps.config.IdempotencyEnabled && req.IdempotencyKey != "" {
 		// Validate the idempotency key format
 		if err := validateIdempotencyKey(req.IdempotencyKey); err != nil {
 			return nil, ps.rewriteError(ctx, err)
@@ -516,8 +518,11 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	if idempotencyKey != "" {
 		if err := ds.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ps.config.IdempotencyKeyTTL); err != nil {
 			idempotencyStoreErrorCounter.Inc()
-			// Don't fail the request, just log the error
-			span.AddEvent("idempotency_key_storage_failed")
+			// Don't fail the request, but record the error for observability
+			span.AddEvent("idempotency_key_storage_failed", trace.WithAttributes(
+				attribute.String("idempotency_key", idempotencyKey),
+				attribute.String("error", err.Error()),
+			))
 		}
 	}
 

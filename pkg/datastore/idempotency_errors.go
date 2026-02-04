@@ -27,9 +27,9 @@ func NewIdempotencyKeyConflictError(idempotencyKey string) IdempotencyKeyConflic
 func (err IdempotencyKeyConflictError) GRPCStatus() *status.Status {
 	return spiceerrors.WithCodeAndDetails(
 		err,
-		codes.InvalidArgument,
+		codes.AlreadyExists,
 		spiceerrors.ForReason(
-			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
+			v1.ErrorReason_ERROR_REASON_ATTEMPT_TO_RECREATE_RELATIONSHIP,
 			map[string]string{
 				"idempotency_key": err.idempotencyKey,
 				"error_type":      "idempotency_conflict",

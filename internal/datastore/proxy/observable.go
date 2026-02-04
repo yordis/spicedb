@@ -413,10 +413,20 @@ func observe(ctx context.Context, name string, queryShape string, opts ...trace.
 }
 
 func (op *observableProxy) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	ctx, closer := observe(ctx, "CheckIdempotencyKey", "", trace.WithAttributes(
+		attribute.String("idempotency_key", idempotencyKey),
+	))
+	defer closer()
+
 	return op.delegate.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
 }
 
 func (op *observableProxy) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
+	ctx, closer := observe(ctx, "StoreIdempotencyKey", "", trace.WithAttributes(
+		attribute.String("idempotency_key", idempotencyKey),
+	))
+	defer closer()
+
 	return op.delegate.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ttl)
 }
 

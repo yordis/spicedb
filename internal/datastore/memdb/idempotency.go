@@ -57,13 +57,21 @@ func (mds *memdbDatastore) StoreIdempotencyKey(ctx context.Context, idempotencyK
 		mds.idempotencyCache = make(map[string]idempotencyCacheEntry)
 	}
 
+	// Lazy cleanup: remove expired entries while holding the write lock
+	now := time.Now()
+	for key, entry := range mds.idempotencyCache {
+		if now.After(entry.expiresAt) {
+			delete(mds.idempotencyCache, key)
+		}
+	}
+
 	mds.idempotencyCache[idempotencyKey] = idempotencyCacheEntry{
 		result: &datastore.IdempotencyResult{
 			Revision:    datastore.NoRevision,
 			RequestHash: requestHash,
-			CreatedAt:   time.Now(),
+			CreatedAt:   now,
 		},
-		expiresAt: time.Now().Add(ttl),
+		expiresAt: now.Add(ttl),
 	}
 
 	return nil

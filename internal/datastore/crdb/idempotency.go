@@ -25,7 +25,6 @@ func (cds *crdbDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKe
 	// Query by the dedicated idempotency_key column for efficient lookup
 	query := psql.Select(
 		schema.ColMetadata,
-		schema.ColExpiresAt,
 	).
 		From(schema.TableTransactionMetadata).
 		Where(sq.Eq{schema.ColIdempotencyKey: idempotencyKey}).
@@ -37,9 +36,8 @@ func (cds *crdbDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKe
 	}
 
 	var metadata json.RawMessage
-	var expiresAt time.Time
 	rowErr := cds.readPool.QueryRowFunc(ctx, func(_ context.Context, row pgx.Row) error {
-		return row.Scan(&metadata, &expiresAt)
+		return row.Scan(&metadata)
 	}, sqlQuery, args...)
 	if rowErr != nil {
 		if errors.Is(rowErr, pgx.ErrNoRows) {
@@ -61,7 +59,7 @@ func (cds *crdbDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKe
 	return &datastore.IdempotencyResult{
 		Revision:    datastore.NoRevision,
 		RequestHash: storedHash,
-		CreatedAt:   expiresAt,
+		CreatedAt:   time.Now(),
 	}, nil
 }
 

@@ -475,6 +475,16 @@ func defaultIfZero[T comparable](value T, defaultValue T) T {
 	return value
 }
 
+// boolPtrDefault returns a pointer to the default value if the input is nil,
+// otherwise returns the input pointer. This allows distinguishing between
+// "not set" (nil, use default) and "explicitly set to false".
+func boolPtrDefault(value *bool, defaultValue bool) *bool {
+	if value == nil {
+		return &defaultValue
+	}
+	return value
+}
+
 
 // TransactionMetadataTooLargeError indicates that the metadata for a transaction is too large.
 type TransactionMetadataTooLargeError struct {
