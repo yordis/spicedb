@@ -396,6 +396,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		metadataForWrite, err = mergeTransactionMetadata(req.OptionalTransactionMetadata, map[string]string{
 			datastore.IdempotencyKeyMetadataKey:         idempotencyKey,
 			datastore.IdempotencyRequestHashMetadataKey: requestHash,
+			datastore.IdempotencyHashVersionMetadataKey: datastore.IdempotencyHashVersion,
 		})
 		if err != nil {
 			return nil, ps.rewriteError(ctx, err)
@@ -542,6 +543,9 @@ func (ps *permissionServer) validateTransactionMetadata(metadata *structpb.Struc
 		}
 		if _, exists := metadata.Fields[datastore.IdempotencyRequestHashMetadataKey]; exists {
 			return NewReservedTransactionMetadataKeyErr(datastore.IdempotencyRequestHashMetadataKey)
+		}
+		if _, exists := metadata.Fields[datastore.IdempotencyHashVersionMetadataKey]; exists {
+			return NewReservedTransactionMetadataKeyErr(datastore.IdempotencyHashVersionMetadataKey)
 		}
 	}
 

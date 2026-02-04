@@ -86,6 +86,21 @@ When no idempotency key is provided:
 - Each request is treated as a new operation
 - Standard retry logic applies (retries may create duplicates for non-idempotent operations)
 
+## Hashing and Metadata
+
+SpiceDB hashes the request body (updates, preconditions, and optional transaction metadata) to detect conflicts for the same idempotency key. The hash is computed using stable canonicalization (sorted updates and preconditions), so retries with the same logical request produce the same hash.
+
+The server stores idempotency information in transaction metadata using reserved keys:
+- `idempotency_key`
+- `request_hash`
+- `hash_version`
+
+These keys cannot be supplied by clients in `optional_transaction_metadata`. The `hash_version` field is included to allow future hash algorithm upgrades without changing idempotency semantics.
+
+### Hash Collisions
+
+Request hashes use a cryptographic hash function, making collisions practically negligible. The most likely source of mismatch is inconsistent canonicalization, not cryptographic collision.
+
 ## TTL and Cleanup
 
 Idempotency keys are retained for a configurable duration (default: 24 hours) where the datastore

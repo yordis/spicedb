@@ -2375,7 +2375,7 @@ func TestWriteRelationshipsIdempotencyBasic(t *testing.T) {
 	req := require.New(t)
 	ctx := context.Background()
 
-	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	conn, cleanup, ds, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
 	defer cleanup()
 
 	client := v1.NewPermissionsServiceClient(conn)
@@ -2419,6 +2419,13 @@ func TestWriteRelationshipsIdempotencyBasic(t *testing.T) {
 	req.NotNil(token1)
 	req.NotNil(token2)
 
+	rev1, _, err := zedtoken.DecodeRevision(token1, ds)
+	req.NoError(err)
+
+	rev2, _, err := zedtoken.DecodeRevision(token2, ds)
+	req.NoError(err)
+	req.False(rev2.LessThan(rev1))
+
 	// Verify the relationship exists only once
 	listReq := &v1.ReadRelationshipsRequest{
 		RelationshipFilter: &v1.RelationshipFilter{
@@ -2442,6 +2449,66 @@ func TestWriteRelationshipsIdempotencyBasic(t *testing.T) {
 
 	req.Len(rels, 1)
 	req.Equal("user1", rels[0].Subject.Object.ObjectId)
+}
+
+func TestWriteRelationshipsIdempotencyMetadata(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	conn, cleanup, _, beforeWriteRev := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	defer cleanup()
+
+	client := v1.NewPermissionsServiceClient(conn)
+	watchClient := v1.NewWatchServiceClient(conn)
+
+	updateReq := &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{
+			{
+				Operation: v1.RelationshipUpdate_OPERATION_CREATE,
+				Relationship: &v1.Relationship{
+					Resource: &v1.ObjectReference{
+						ObjectType: "document",
+						ObjectId:   "doc-metadata",
+					},
+					Relation: "viewer",
+					Subject: &v1.SubjectReference{
+						Object: &v1.ObjectReference{
+							ObjectType: "user",
+							ObjectId:   "user-metadata",
+						},
+					},
+				},
+			},
+		},
+		IdempotencyKey: "test-key-metadata",
+	}
+
+	_, err := client.WriteRelationships(ctx, updateReq)
+	req.NoError(err)
+
+	beforeWriteToken := zedtoken.MustNewFromRevisionForTesting(beforeWriteRev)
+	watchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	stream, err := watchClient.Watch(watchCtx, &v1.WatchRequest{OptionalStartCursor: beforeWriteToken})
+	req.NoError(err)
+
+	resp, err := stream.Recv()
+	req.NoError(err)
+	req.NotNil(resp.OptionalTransactionMetadata)
+
+	metadata := resp.OptionalTransactionMetadata.AsMap()
+	keyValue, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string)
+	req.True(ok)
+	req.Equal("test-key-metadata", keyValue)
+
+	hashValue, ok := metadata[datastore.IdempotencyRequestHashMetadataKey].(string)
+	req.True(ok)
+	req.NotEmpty(hashValue)
+
+	versionValue, ok := metadata[datastore.IdempotencyHashVersionMetadataKey].(string)
+	req.True(ok)
+	req.Equal(datastore.IdempotencyHashVersion, versionValue)
 }
 
 func TestWriteRelationshipsIdempotencyConflict(t *testing.T) {
