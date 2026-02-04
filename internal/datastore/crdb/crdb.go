@@ -328,10 +328,14 @@ func (cds *crdbDatastore) ReadWriteTx(
 	// Extract metadata before entering the transaction so we can access idempotency key for error handling
 	metadata := config.Metadata.AsMap()
 
-	// Extract idempotency key from metadata if present (for use in error handling)
+	// Extract idempotency key/request hash from metadata if present (for use in error handling)
 	var idempotencyKey *string
+	var requestHash string
 	if key, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && key != "" {
 		idempotencyKey = &key
+	}
+	if hash, ok := metadata[datastore.IdempotencyRequestHashMetadataKey].(string); ok && hash != "" {
+		requestHash = hash
 	}
 
 	err := cds.writePool.TryBeginFunc(ctx, cds.acquireTimeout, func(tx pgx.Tx) error {
@@ -421,8 +425,12 @@ func (cds *crdbDatastore) ReadWriteTx(
 		// Check if this is an idempotency key constraint violation
 		if pgxcommon.IsIdempotencyKeyConstraintError(err) && idempotencyKey != nil {
 			// Query for the existing transaction with this idempotency key
-			result, checkErr := cds.CheckIdempotencyKey(ctx, *idempotencyKey, "")
+			result, checkErr := cds.CheckIdempotencyKey(ctx, *idempotencyKey, requestHash)
 			if checkErr == nil && result != nil {
+				if requestHash != "" && result.RequestHash != "" && result.RequestHash != requestHash {
+					return datastore.NoRevision, datastore.NewIdempotencyKeyConflictError(*idempotencyKey)
+				}
+
 				// Return the existing revision as success (idempotent behavior)
 				// Note: For CRDB, we return HeadRevision since CheckIdempotencyKey returns NoRevision
 				headRev, headErr := cds.HeadRevision(ctx)

@@ -363,6 +363,16 @@ func (mds *mysqlDatastore) ReadWriteTx(
 	if config.Metadata != nil {
 		metadata = config.Metadata.AsMap()
 	}
+	var idempotencyKey string
+	var requestHash string
+	if metadata != nil {
+		if key, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok {
+			idempotencyKey = key
+		}
+		if hash, ok := metadata[datastore.IdempotencyRequestHashMetadataKey].(string); ok {
+			requestHash = hash
+		}
+	}
 
 	var err error
 	for i := uint8(0); i <= mds.maxRetries; i++ {
@@ -398,13 +408,19 @@ func (mds *mysqlDatastore) ReadWriteTx(
 			return fn(ctx, rwt)
 		}); err != nil {
 			// Check if this is an idempotency key constraint violation
-			if isIdempotencyKeyConstraintError(err) {
-				if idempotencyKey, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && idempotencyKey != "" {
-					// Query for the existing transaction with this idempotency key
-					result, checkErr := mds.CheckIdempotencyKey(ctx, idempotencyKey, "")
-					if checkErr == nil && result != nil {
-						// Return the existing revision as success (idempotent behavior)
-						return result.Revision, nil
+			if isIdempotencyKeyConstraintError(err) && idempotencyKey != "" {
+				// Query for the existing transaction with this idempotency key
+				result, checkErr := mds.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+				if checkErr == nil && result != nil {
+					if requestHash != "" && result.RequestHash != "" && result.RequestHash != requestHash {
+						return datastore.NoRevision, datastore.NewIdempotencyKeyConflictError(idempotencyKey)
+					}
+
+					// Return the existing revision as success (idempotent behavior)
+					// Note: For MySQL, we return HeadRevision since CheckIdempotencyKey returns NoRevision
+					headRev, headErr := mds.HeadRevision(ctx)
+					if headErr == nil {
+						return headRev, nil
 					}
 				}
 			}

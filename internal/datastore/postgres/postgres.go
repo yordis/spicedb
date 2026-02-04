@@ -456,6 +456,16 @@ func (pgd *pgDatastore) ReadWriteTx(
 	if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
 		metadata = config.Metadata.AsMap()
 	}
+	var idempotencyKey string
+	var requestHash string
+	if metadata != nil {
+		if key, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok {
+			idempotencyKey = key
+		}
+		if hash, ok := metadata[datastore.IdempotencyRequestHashMetadataKey].(string); ok {
+			requestHash = hash
+		}
+	}
 
 	var err error
 	for i := uint8(0); i <= pgd.maxRetries; i++ {
@@ -491,13 +501,19 @@ func (pgd *pgDatastore) ReadWriteTx(
 		}))
 		if err != nil {
 			// Check if this is an idempotency key constraint violation
-			if pgxcommon.IsIdempotencyKeyConstraintError(err) {
-				if idempotencyKey, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && idempotencyKey != "" {
-					// Query for the existing transaction with this idempotency key
-					result, checkErr := pgd.CheckIdempotencyKey(ctx, idempotencyKey, "")
-					if checkErr == nil && result != nil {
-						// Return the existing revision as success (idempotent behavior)
-						return result.Revision, nil
+			if pgxcommon.IsIdempotencyKeyConstraintError(err) && idempotencyKey != "" {
+				// Query for the existing transaction with this idempotency key
+				result, checkErr := pgd.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+				if checkErr == nil && result != nil {
+					if requestHash != "" && result.RequestHash != "" && result.RequestHash != requestHash {
+						return datastore.NoRevision, datastore.NewIdempotencyKeyConflictError(idempotencyKey)
+					}
+
+					// Return the existing revision as success (idempotent behavior)
+					// Note: For Postgres, we return HeadRevision since CheckIdempotencyKey returns NoRevision
+					headRev, headErr := pgd.HeadRevision(ctx)
+					if headErr == nil {
+						return headRev, nil
 					}
 				}
 			}

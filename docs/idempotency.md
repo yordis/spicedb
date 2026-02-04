@@ -4,7 +4,7 @@ SpiceDB supports idempotency keys for `WriteRelationships` operations, allowing 
 
 ## Overview
 
-Idempotency keys ensure that repeated requests with the same key and request body produce the same result. This is particularly useful in distributed systems where network failures or timeouts may cause clients to retry requests, preventing issues like:
+Idempotency keys ensure that repeated requests with the same key and request body produce the same effect. Responses may include a newer `WrittenAt` revision than the original request, but the state changes are not duplicated. This is particularly useful in distributed systems where network failures or timeouts may cause clients to retry requests, preventing issues like:
 
 - Duplicate relationship creation
 - Race conditions in event processing pipelines
@@ -70,7 +70,7 @@ Recommended key formats include:
 
 When a request is received with an idempotency key that was previously used with the same request body:
 - The request succeeds
-- The response contains a valid ZedToken
+- The response contains a valid ZedToken (which may be newer than the original)
 - No duplicate writes occur
 
 ### Same Key, Different Request
@@ -167,7 +167,7 @@ func processEvent(ctx context.Context, event Event) error {
 
 2. **Request body matching**: The entire request body (updates, preconditions, metadata) is hashed for conflict detection. Any change to the request body with the same key will result in a conflict error.
 
-3. **No revision replay**: For safety reasons (avoiding the "new enemy problem"), replayed idempotent requests return the current head revision, not the original revision. This ensures clients always have a consistent, up-to-date view.
+3. **No revision replay**: For safety reasons (avoiding the "new enemy problem"), replayed idempotent requests return the current head revision, not the original revision. Tokens may differ between retries even when the effect is identical.
 
 4. **Storage overhead**: Each idempotency key requires storage until the TTL expires. High-volume systems should consider the storage implications.
 

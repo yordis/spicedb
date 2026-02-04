@@ -170,7 +170,37 @@ func (mdb *memdbDatastore) ReadWriteTx(
 		txNumAttempts = 1
 	}
 
+	var idempotencyKey string
+	var requestHash string
+	if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
+		metadataMap := config.Metadata.AsMap()
+		if key, ok := metadataMap[datastore.IdempotencyKeyMetadataKey].(string); ok {
+			idempotencyKey = key
+		}
+		if hash, ok := metadataMap[datastore.IdempotencyRequestHashMetadataKey].(string); ok {
+			requestHash = hash
+		}
+	}
+
 	for i := 0; i < txNumAttempts; i++ {
+		if idempotencyKey != "" {
+			result, err := mdb.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+			if err != nil {
+				return datastore.NoRevision, err
+			}
+			if result != nil {
+				if requestHash != "" && result.RequestHash != "" && result.RequestHash != requestHash {
+					return datastore.NoRevision, datastore.NewIdempotencyKeyConflictError(idempotencyKey)
+				}
+
+				headRev, headErr := mdb.HeadRevision(ctx)
+				if headErr != nil {
+					return datastore.NoRevision, headErr
+				}
+				return headRev, nil
+			}
+		}
+
 		var tx *memdb.Txn
 		createTxOnce := sync.Once{}
 		txSrc := func() (*memdb.Txn, error) {

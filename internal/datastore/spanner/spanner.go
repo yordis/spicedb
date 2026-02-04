@@ -343,9 +343,13 @@ func (sd *spannerDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUser
 
 	// Extract idempotency key from metadata if present (for use in error handling and insert)
 	var idempotencyKey *string
+	var requestHash string
 	if metadata != nil {
 		if key, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && key != "" {
 			idempotencyKey = &key
+		}
+		if hash, ok := metadata[datastore.IdempotencyRequestHashMetadataKey].(string); ok && hash != "" {
+			requestHash = hash
 		}
 	}
 
@@ -407,8 +411,12 @@ func (sd *spannerDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUser
 		// Check if this is an idempotency key constraint violation (AlreadyExists)
 		if isIdempotencyKeyConstraintError(err) && idempotencyKey != nil {
 			// Query for the existing transaction with this idempotency key
-			result, checkErr := sd.CheckIdempotencyKey(ctx, *idempotencyKey, "")
+			result, checkErr := sd.CheckIdempotencyKey(ctx, *idempotencyKey, requestHash)
 			if checkErr == nil && result != nil {
+				if requestHash != "" && result.RequestHash != "" && result.RequestHash != requestHash {
+					return datastore.NoRevision, datastore.NewIdempotencyKeyConflictError(*idempotencyKey)
+				}
+
 				// Return HeadRevision as success (idempotent behavior)
 				headRev, headErr := sd.HeadRevision(ctx)
 				if headErr == nil {

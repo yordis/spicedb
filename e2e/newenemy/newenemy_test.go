@@ -659,7 +659,7 @@ func leaderFromRangeRow(row pgx.Row) int {
 
 // TestIdempotencyKeys tests the idempotency key feature against a real CockroachDB cluster.
 // It verifies that:
-// 1. Repeated requests with the same idempotency key and request body return the same result
+// 1. Repeated requests with the same idempotency key and request body do not duplicate effects
 // 2. Requests with the same idempotency key but different request body return an error
 // 3. Concurrent requests with the same idempotency key are handled correctly
 func TestIdempotencyKeys(t *testing.T) {
@@ -738,6 +738,55 @@ definition document {
 		t.Logf("Second response token: %s", resp2.WrittenAt.Token)
 	})
 
+	t.Run("same_key_same_request_concurrent", func(t *testing.T) {
+		idempotencyKey := fmt.Sprintf("test-key-concurrent-%d", time.Now().UnixNano())
+
+		req := &v1.WriteRelationshipsRequest{
+			Updates: []*v1.RelationshipUpdate{
+				{
+					Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+					Relationship: &v1.Relationship{
+						Resource: &v1.ObjectReference{
+							ObjectType: "document",
+							ObjectId:   "doc-concurrent",
+						},
+						Relation: "viewer",
+						Subject: &v1.SubjectReference{
+							Object: &v1.ObjectReference{
+								ObjectType: "user",
+								ObjectId:   "user-concurrent",
+							},
+						},
+					},
+				},
+			},
+			IdempotencyKey: idempotencyKey,
+		}
+
+		type result struct {
+			resp *v1.WriteRelationshipsResponse
+			err  error
+		}
+		results := make(chan result, 2)
+
+		for i := 0; i < 2; i++ {
+			go func() {
+				resp, err := client.WriteRelationships(ctx, req)
+				results <- result{resp: resp, err: err}
+			}()
+		}
+
+		r1 := <-results
+		r2 := <-results
+
+		require.NoError(t, r1.err)
+		require.NoError(t, r2.err)
+		require.NotNil(t, r1.resp)
+		require.NotNil(t, r2.resp)
+		require.NotNil(t, r1.resp.WrittenAt)
+		require.NotNil(t, r2.resp.WrittenAt)
+	})
+
 	t.Run("same_key_different_request_returns_error", func(t *testing.T) {
 		idempotencyKey := fmt.Sprintf("test-key-conflict-%d", time.Now().UnixNano())
 
@@ -795,6 +844,87 @@ definition document {
 		require.Error(t, err, "should return error for idempotency key conflict")
 		require.Nil(t, resp2)
 		require.Contains(t, err.Error(), "idempotency", "error should mention idempotency")
+	})
+
+	t.Run("same_key_different_request_concurrent_returns_error", func(t *testing.T) {
+		idempotencyKey := fmt.Sprintf("test-key-conflict-concurrent-%d", time.Now().UnixNano())
+
+		req1 := &v1.WriteRelationshipsRequest{
+			Updates: []*v1.RelationshipUpdate{
+				{
+					Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+					Relationship: &v1.Relationship{
+						Resource: &v1.ObjectReference{
+							ObjectType: "document",
+							ObjectId:   "doc-conflict-concurrent-1",
+						},
+						Relation: "viewer",
+						Subject: &v1.SubjectReference{
+							Object: &v1.ObjectReference{
+								ObjectType: "user",
+								ObjectId:   "user-conflict-concurrent-1",
+							},
+						},
+					},
+				},
+			},
+			IdempotencyKey: idempotencyKey,
+		}
+
+		req2 := &v1.WriteRelationshipsRequest{
+			Updates: []*v1.RelationshipUpdate{
+				{
+					Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+					Relationship: &v1.Relationship{
+						Resource: &v1.ObjectReference{
+							ObjectType: "document",
+							ObjectId:   "doc-conflict-concurrent-2",
+						},
+						Relation: "viewer",
+						Subject: &v1.SubjectReference{
+							Object: &v1.ObjectReference{
+								ObjectType: "user",
+								ObjectId:   "user-conflict-concurrent-2",
+							},
+						},
+					},
+				},
+			},
+			IdempotencyKey: idempotencyKey,
+		}
+
+		type result struct {
+			resp *v1.WriteRelationshipsResponse
+			err  error
+		}
+		results := make(chan result, 2)
+
+		go func() {
+			resp, err := client.WriteRelationships(ctx, req1)
+			results <- result{resp: resp, err: err}
+		}()
+		go func() {
+			resp, err := client.WriteRelationships(ctx, req2)
+			results <- result{resp: resp, err: err}
+		}()
+
+		r1 := <-results
+		r2 := <-results
+
+		if r1.err == nil && r2.err == nil {
+			t.Fatalf("expected one request to fail with idempotency conflict, but both succeeded")
+		}
+		if r1.err != nil && r2.err != nil {
+			t.Fatalf("expected one request to succeed, but both failed: %v / %v", r1.err, r2.err)
+		}
+
+		// Ensure the failing error references idempotency
+		if r1.err != nil {
+			require.Contains(t, r1.err.Error(), "idempotency")
+		}
+		if r2.err != nil {
+			require.Contains(t, r2.err.Error(), "idempotency")
+		}
 	})
 
 	t.Run("no_idempotency_key_creates_new_transaction", func(t *testing.T) {
