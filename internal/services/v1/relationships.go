@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
 	"github.com/prometheus/client_golang/prometheus"
@@ -342,6 +344,11 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 
 	// Handle idempotency key if enabled and provided
 	if ps.config.IdempotencyEnabled && req.IdempotencyKey != "" {
+		// Validate the idempotency key format
+		if err := validateIdempotencyKey(req.IdempotencyKey); err != nil {
+			return nil, ps.rewriteError(ctx, err)
+		}
+
 		var err error
 		requestHash, err = computeWriteRelationshipsRequestHash(req)
 		if err != nil {
@@ -792,3 +799,23 @@ var (
 		Help:      "Total number of idempotency storage errors",
 	})
 )
+
+// MaxIdempotencyKeyLength is the maximum length allowed for idempotency keys.
+const MaxIdempotencyKeyLength = 256
+
+// validateIdempotencyKey validates the format of an idempotency key.
+// - Maximum length of 256 characters
+// - Must be valid UTF-8
+// - Cannot contain null characters
+func validateIdempotencyKey(key string) error {
+	if len(key) > MaxIdempotencyKeyLength {
+		return NewInvalidIdempotencyKeyErr(fmt.Sprintf("idempotency key exceeds maximum length of %d characters", MaxIdempotencyKeyLength))
+	}
+	if !utf8.ValidString(key) {
+		return NewInvalidIdempotencyKeyErr("idempotency key contains invalid UTF-8 characters")
+	}
+	if strings.ContainsRune(key, '\x00') {
+		return NewInvalidIdempotencyKeyErr("idempotency key contains null character")
+	}
+	return nil
+}

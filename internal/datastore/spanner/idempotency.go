@@ -12,13 +12,13 @@ import (
 )
 
 func (sd *spannerDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	// Query by the dedicated idempotency_key column for efficient lookup
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf(
-			"SELECT %s FROM %s WHERE JSON_VALUE(%s, '$.%s') = @idempotencyKey LIMIT 1",
+			"SELECT %s FROM %s WHERE %s = @idempotencyKey LIMIT 1",
 			colMetadata,
 			tableTransactionMetadata,
-			colMetadata,
-			datastore.IdempotencyKeyMetadataKey,
+			colIdempotencyKey,
 		),
 		Params: map[string]interface{}{
 			"idempotencyKey": idempotencyKey,
@@ -63,7 +63,7 @@ func (sd *spannerDatastore) CheckIdempotencyKey(ctx context.Context, idempotency
 }
 
 func (sd *spannerDatastore) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
-	// Spanner implementation would insert into transaction_metadata table
-	// For now, this is a no-op
+	// The idempotency key is already stored when the transaction metadata is inserted.
+	// This method is a no-op for Spanner since the key is stored in the transaction_metadata row.
 	return nil
 }

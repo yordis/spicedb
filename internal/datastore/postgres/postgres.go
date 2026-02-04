@@ -451,6 +451,12 @@ func (pgd *pgDatastore) ReadWriteTx(
 
 	config := options.NewRWTOptionsWithOptions(opts...)
 
+	// Extract metadata outside the retry loop so we can access it for idempotency key handling
+	var metadata map[string]any
+	if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
+		metadata = config.Metadata.AsMap()
+	}
+
 	var err error
 	for i := uint8(0); i <= pgd.maxRetries; i++ {
 		var newXID xid8
@@ -458,10 +464,6 @@ func (pgd *pgDatastore) ReadWriteTx(
 		var timestamp time.Time
 		err = wrapError(pgx.BeginTxFunc(ctx, pgd.writePool, pgx.TxOptions{IsoLevel: pgd.isolationLevel}, func(tx pgx.Tx) error {
 			var err error
-			var metadata map[string]any
-			if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
-				metadata = config.Metadata.AsMap()
-			}
 
 			newXID, newSnapshot, timestamp, err = createNewTransaction(ctx, tx, metadata)
 			if err != nil {
@@ -488,6 +490,18 @@ func (pgd *pgDatastore) ReadWriteTx(
 			return fn(ctx, rwt)
 		}))
 		if err != nil {
+			// Check if this is an idempotency key constraint violation
+			if pgxcommon.IsIdempotencyKeyConstraintError(err) {
+				if idempotencyKey, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && idempotencyKey != "" {
+					// Query for the existing transaction with this idempotency key
+					result, checkErr := pgd.CheckIdempotencyKey(ctx, idempotencyKey, "")
+					if checkErr == nil && result != nil {
+						// Return the existing revision as success (idempotent behavior)
+						return result.Revision, nil
+					}
+				}
+			}
+
 			if !config.DisableRetries && errorRetryable(err) {
 				pgxcommon.SleepOnErr(ctx, err, i)
 				continue

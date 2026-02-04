@@ -42,6 +42,7 @@ const (
 	ColCounterUpdatedAt        = "updated_at_timestamp"
 	ColExpiresAt               = "expires_at"
 	ColMetadata                = "metadata"
+	ColIdempotencyKey          = "idempotency_key"
 )
 
 func Schema(colOptimizationOpt common.ColumnOptimizationOption, withIntegrity bool, expirationDisabled bool) *common.SchemaInformation {

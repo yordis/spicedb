@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/ccoveille/go-safecast/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -173,9 +174,20 @@ func (mds *mysqlDatastore) createNewTransaction(ctx context.Context, tx *sql.Tx,
 		wrappedMetadata = metadata
 	}
 
-	createQuery := mds.createTxn.Values(&wrappedMetadata)
-	if err != nil {
-		return 0, fmt.Errorf("createNewTransaction: %w", err)
+	// Extract idempotency key from metadata if present
+	var idempotencyKey *string
+	if key, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && key != "" {
+		idempotencyKey = &key
+	}
+
+	// Build the insert query with optional idempotency_key column
+	var createQuery sq.InsertBuilder
+	if idempotencyKey != nil {
+		createQuery = sb.Insert(mds.driver.RelationTupleTransaction()).
+			Columns(colMetadata, colIdempotencyKey).
+			Values(&wrappedMetadata, *idempotencyKey)
+	} else {
+		createQuery = mds.createTxn.Values(&wrappedMetadata)
 	}
 
 	sql, args, err := createQuery.ToSql()

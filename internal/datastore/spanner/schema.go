@@ -35,6 +35,7 @@ const (
 	tableTransactionMetadata = "transaction_metadata"
 	colTransactionTag        = "transaction_tag"
 	colMetadata              = "metadata"
+	colIdempotencyKey        = "idempotency_key"
 )
 
 var allRelationshipCols = []string{

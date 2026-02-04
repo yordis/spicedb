@@ -2607,3 +2607,88 @@ func TestWriteRelationshipsIdempotencyWithoutKey(t *testing.T) {
 	// Without idempotency keys, tokens will be different (different revisions)
 	req.NotEqual(resp1.WrittenAt, resp2.WrittenAt)
 }
+
+func TestWriteRelationshipsIdempotencyKeyValidation(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	defer cleanup()
+
+	client := v1.NewPermissionsServiceClient(conn)
+
+	testCases := []struct {
+		name        string
+		key         string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "key too long",
+			key:         strings.Repeat("a", 257),
+			expectError: true,
+			errorMsg:    "exceeds maximum length",
+		},
+		{
+			name:        "key at max length",
+			key:         strings.Repeat("a", 256),
+			expectError: false,
+		},
+		{
+			name:        "key with null character",
+			key:         "test\x00key",
+			expectError: true,
+			errorMsg:    "null character",
+		},
+		{
+			name:        "valid key with unicode",
+			key:         "test-key-日本語",
+			expectError: false,
+		},
+		{
+			name:        "valid key with special chars",
+			key:         "test-key_123!@#$%",
+			expectError: false,
+		},
+	}
+
+	for i, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			updateReq := &v1.WriteRelationshipsRequest{
+				Updates: []*v1.RelationshipUpdate{
+					{
+						Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+						Relationship: &v1.Relationship{
+							Resource: &v1.ObjectReference{
+								ObjectType: "document",
+								ObjectId:   fmt.Sprintf("docval%d", i),
+							},
+							Relation: "viewer",
+							Subject: &v1.SubjectReference{
+								Object: &v1.ObjectReference{
+									ObjectType: "user",
+									ObjectId:   fmt.Sprintf("userval%d", i),
+								},
+							},
+						},
+					},
+				},
+				IdempotencyKey: tc.key,
+			}
+
+			resp, err := client.WriteRelationships(ctx, updateReq)
+
+			if tc.expectError {
+				req.Error(err)
+				req.Nil(resp)
+				st, ok := status.FromError(err)
+				req.True(ok)
+				req.Equal(codes.InvalidArgument, st.Code())
+				req.Contains(st.Message(), tc.errorMsg)
+			} else {
+				req.NoError(err)
+				req.NotNil(resp)
+			}
+		})
+	}
+}

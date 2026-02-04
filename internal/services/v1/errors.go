@@ -571,3 +571,34 @@ func (err IdempotencyConflictError) GRPCStatus() *status.Status {
 		),
 	)
 }
+
+// InvalidIdempotencyKeyError indicates that an idempotency key has an invalid format.
+type InvalidIdempotencyKeyError struct {
+	error
+	reason string
+}
+
+// NewInvalidIdempotencyKeyErr constructs a new invalid idempotency key error.
+func NewInvalidIdempotencyKeyErr(reason string) InvalidIdempotencyKeyError {
+	return InvalidIdempotencyKeyError{
+		error:  fmt.Errorf("invalid idempotency key: %s", reason),
+		reason: reason,
+	}
+}
+
+func (err InvalidIdempotencyKeyError) MarshalZerologObject(e *zerolog.Event) {
+	e.Err(err.error).Str("reason", err.reason)
+}
+
+func (err InvalidIdempotencyKeyError) GRPCStatus() *status.Status {
+	return spiceerrors.WithCodeAndDetails(
+		err,
+		codes.InvalidArgument,
+		spiceerrors.ForReason(
+			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
+			map[string]string{
+				"message": err.reason,
+			},
+		),
+	)
+}

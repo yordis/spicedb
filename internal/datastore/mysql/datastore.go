@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -36,6 +37,7 @@ const (
 	colID               = "id"
 	colTimestamp        = "timestamp"
 	colMetadata         = "metadata"
+	colIdempotencyKey   = "idempotency_key"
 	colNamespace        = "namespace"
 	colConfig           = "serialized_config"
 	colCreatedTxn       = "created_transaction"
@@ -356,15 +358,16 @@ func (mds *mysqlDatastore) ReadWriteTx(
 ) (datastore.Revision, error) {
 	config := options.NewRWTOptionsWithOptions(opts...)
 
+	// Extract metadata outside the retry loop so we can access it for idempotency key handling
+	var metadata common.TransactionMetadata
+	if config.Metadata != nil {
+		metadata = config.Metadata.AsMap()
+	}
+
 	var err error
 	for i := uint8(0); i <= mds.maxRetries; i++ {
 		var newTxnID uint64
 		if err = migrations.BeginTxFunc(ctx, mds.db, &sql.TxOptions{Isolation: sql.LevelSerializable}, func(tx *sql.Tx) error {
-			var metadata common.TransactionMetadata
-			if config.Metadata != nil {
-				metadata = config.Metadata.AsMap()
-			}
-
 			newTxnID, err = mds.createNewTransaction(ctx, tx, metadata)
 			if err != nil {
 				return fmt.Errorf("unable to create new txn ID: %w", err)
@@ -394,6 +397,18 @@ func (mds *mysqlDatastore) ReadWriteTx(
 
 			return fn(ctx, rwt)
 		}); err != nil {
+			// Check if this is an idempotency key constraint violation
+			if isIdempotencyKeyConstraintError(err) {
+				if idempotencyKey, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && idempotencyKey != "" {
+					// Query for the existing transaction with this idempotency key
+					result, checkErr := mds.CheckIdempotencyKey(ctx, idempotencyKey, "")
+					if checkErr == nil && result != nil {
+						// Return the existing revision as success (idempotent behavior)
+						return result.Revision, nil
+					}
+				}
+			}
+
 			if !config.DisableRetries && isErrorRetryable(err) {
 				continue
 			}
@@ -428,6 +443,18 @@ func isErrorRetryable(err error) bool {
 	}
 
 	return mysqlerr.Number == errMysqlDeadlock || mysqlerr.Number == errMysqlLockWaitTimeout
+}
+
+// isIdempotencyKeyConstraintError returns true if the error is a duplicate entry error
+// for the idempotency_key unique index.
+func isIdempotencyKeyConstraintError(err error) bool {
+	var mysqlerr *mysql.MySQLError
+	if !errors.As(err, &mysqlerr) {
+		return false
+	}
+
+	// Check if it's a duplicate entry error and contains the idempotency key index name
+	return mysqlerr.Number == errMysqlDuplicateEntry && strings.Contains(mysqlerr.Message, "idx_idempotency_key")
 }
 
 type querier interface {

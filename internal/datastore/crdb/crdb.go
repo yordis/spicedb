@@ -325,6 +325,15 @@ func (cds *crdbDatastore) ReadWriteTx(
 		ctx = context.WithValue(ctx, pool.CtxDisableRetries, true)
 	}
 
+	// Extract metadata before entering the transaction so we can access idempotency key for error handling
+	metadata := config.Metadata.AsMap()
+
+	// Extract idempotency key from metadata if present (for use in error handling)
+	var idempotencyKey *string
+	if key, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && key != "" {
+		idempotencyKey = &key
+	}
+
 	err := cds.writePool.TryBeginFunc(ctx, cds.acquireTimeout, func(tx pgx.Tx) error {
 		querier := pgxcommon.QuerierFuncsFor(tx)
 		executor := common.QueryRelationshipsExecutor{
@@ -357,22 +366,31 @@ func (cds *crdbDatastore) ReadWriteTx(
 		// 1) len(metadata) > 0, which requires writing the metadata provided
 		// 2) metadata is required to mark the transaction as not matching
 		//    a deletion of expired relationships.
+		// 3) an idempotency key is present (for deduplication)
 		//
 		//    A transaction is marked as such IF and only IF the operations in the transaction
 		//    consist solely of deletions, as in that scenario, we cannot be certain in the Watch
 		//    changefeed that the transaction is not a deletion of expired relationships performed
 		//    by CRDB itself. This is also only necessary if both expiration and watch are enabled.
-		metadata := config.Metadata.AsMap()
-		requiresMetadata := len(metadata) > 0 || (cds.watchEnabled && (config.IncludesExpiredAt || !rwt.hasNonExpiredDeletionChange))
+		requiresMetadata := len(metadata) > 0 || (cds.watchEnabled && (config.IncludesExpiredAt || !rwt.hasNonExpiredDeletionChange)) || idempotencyKey != nil
 		if requiresMetadata {
 			// Mark the transaction as coming from SpiceDB. See the comment in watch.go
 			// for why this is necessary.
 			metadata[spicedbTransactionKey] = true
 
 			expiresAt := time.Now().Add(cds.gcWindow).Add(1 * time.Minute)
-			insertTransactionMetadata := psql.Insert(schema.TableTransactionMetadata).
-				Columns(schema.ColExpiresAt, schema.ColMetadata).
-				Values(expiresAt, metadata)
+
+			// Build insert with optional idempotency_key column
+			var insertTransactionMetadata sq.InsertBuilder
+			if idempotencyKey != nil {
+				insertTransactionMetadata = psql.Insert(schema.TableTransactionMetadata).
+					Columns(schema.ColExpiresAt, schema.ColMetadata, schema.ColIdempotencyKey).
+					Values(expiresAt, metadata, *idempotencyKey)
+			} else {
+				insertTransactionMetadata = psql.Insert(schema.TableTransactionMetadata).
+					Columns(schema.ColExpiresAt, schema.ColMetadata).
+					Values(expiresAt, metadata)
+			}
 
 			sql, args, err := insertTransactionMetadata.ToSql()
 			if err != nil {
@@ -400,6 +418,19 @@ func (cds *crdbDatastore) ReadWriteTx(
 		return nil
 	})
 	if err != nil {
+		// Check if this is an idempotency key constraint violation
+		if pgxcommon.IsIdempotencyKeyConstraintError(err) && idempotencyKey != nil {
+			// Query for the existing transaction with this idempotency key
+			result, checkErr := cds.CheckIdempotencyKey(ctx, *idempotencyKey, "")
+			if checkErr == nil && result != nil {
+				// Return the existing revision as success (idempotent behavior)
+				// Note: For CRDB, we return HeadRevision since CheckIdempotencyKey returns NoRevision
+				headRev, headErr := cds.HeadRevision(ctx)
+				if headErr == nil {
+					return headRev, nil
+				}
+			}
+		}
 		return datastore.NoRevision, wrapError(err)
 	}
 

@@ -13,14 +13,10 @@ import (
 )
 
 func (md *mysqlDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	// Query by the dedicated idempotency_key column for efficient lookup
 	query := sb.Select(colID, colMetadata, colTimestamp).
 		From(md.driver.RelationTupleTransaction()).
-		Where(sq.Expr(
-			"metadata IS NOT NULL AND JSON_UNQUOTE(JSON_EXTRACT(CAST(metadata AS JSON), ?)) = ?",
-			"$."+datastore.IdempotencyKeyMetadataKey,
-			idempotencyKey,
-		)).
-		OrderBy(colID + " DESC").
+		Where(sq.Eq{colIdempotencyKey: idempotencyKey}).
 		Limit(1)
 
 	sqlQuery, args, err := query.ToSql()
@@ -51,7 +47,7 @@ func (md *mysqlDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKe
 }
 
 func (md *mysqlDatastore) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
-	// MySQL implementation would insert into transaction_metadata table
-	// For now, this is a no-op
+	// The idempotency key is already stored when the transaction is created via createNewTransaction.
+	// This method is a no-op for MySQL since the key is stored in the transaction row itself.
 	return nil
 }

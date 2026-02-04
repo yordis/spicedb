@@ -335,21 +335,48 @@ func (sd *spannerDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUser
 	transactionTag := "sdb-rwt-" + uuid.NewString()
 	transactionTag = transactionTag[:36] // there is a column constraint on the length
 
+	// Extract metadata before entering the transaction so we can access idempotency key for error handling
+	var metadata map[string]any
+	if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
+		metadata = config.Metadata.AsMap()
+	}
+
+	// Extract idempotency key from metadata if present (for use in error handling and insert)
+	var idempotencyKey *string
+	if metadata != nil {
+		if key, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && key != "" {
+			idempotencyKey = &key
+		}
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	rs, err := sd.client.ReadWriteTransactionWithOptions(ctx, func(ctx context.Context, spannerRWT *spanner.ReadWriteTransaction) error {
 		txSource := func() readTX {
 			return &traceableRTX{delegate: spannerRWT}
 		}
 
-		if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
-			// Insert the metadata into the transaction metadata table.
-			mutation := spanner.Insert(tableTransactionMetadata,
-				[]string{colTransactionTag, colMetadata},
-				[]any{transactionTag, spanner.NullJSON{
-					Value: config.Metadata.AsMap(),
-					Valid: true,
-				}},
-			)
+		// Metadata row is required if either metadata is present or idempotency key is present
+		requiresMetadata := len(metadata) > 0 || idempotencyKey != nil
+		if requiresMetadata {
+			// Build the mutation with optional idempotency_key column
+			var mutation *spanner.Mutation
+			if idempotencyKey != nil {
+				mutation = spanner.Insert(tableTransactionMetadata,
+					[]string{colTransactionTag, colMetadata, colIdempotencyKey},
+					[]any{transactionTag, spanner.NullJSON{
+						Value: metadata,
+						Valid: len(metadata) > 0,
+					}, *idempotencyKey},
+				)
+			} else {
+				mutation = spanner.Insert(tableTransactionMetadata,
+					[]string{colTransactionTag, colMetadata},
+					[]any{transactionTag, spanner.NullJSON{
+						Value: metadata,
+						Valid: true,
+					}},
+				)
+			}
 
 			if err := spannerRWT.BufferWrite([]*spanner.Mutation{mutation}); err != nil {
 				return fmt.Errorf("unable to write metadata: %w", err)
@@ -377,6 +404,19 @@ func (sd *spannerDatastore) ReadWriteTx(ctx context.Context, fn datastore.TxUser
 		return nil
 	}, spanner.TransactionOptions{TransactionTag: transactionTag})
 	if err != nil {
+		// Check if this is an idempotency key constraint violation (AlreadyExists)
+		if isIdempotencyKeyConstraintError(err) && idempotencyKey != nil {
+			// Query for the existing transaction with this idempotency key
+			result, checkErr := sd.CheckIdempotencyKey(ctx, *idempotencyKey, "")
+			if checkErr == nil && result != nil {
+				// Return HeadRevision as success (idempotent behavior)
+				headRev, headErr := sd.HeadRevision(ctx)
+				if headErr == nil {
+					return headRev, nil
+				}
+			}
+		}
+
 		if cerr := convertToWriteConstraintError(err); cerr != nil {
 			return datastore.NoRevision, cerr
 		}
@@ -463,4 +503,15 @@ func convertToWriteConstraintError(err error) error {
 		return common.NewCreateRelationshipExistsError(nil)
 	}
 	return nil
+}
+
+// isIdempotencyKeyConstraintError returns true if the error is an AlreadyExists error
+// that is related to the idempotency_key unique index.
+func isIdempotencyKeyConstraintError(err error) bool {
+	if spanner.ErrCode(err) == codes.AlreadyExists {
+		description := spanner.ErrDesc(err)
+		// Check if the error description mentions the idempotency key index
+		return regexp.MustCompile(`idx_idempotency_key`).MatchString(description)
+	}
+	return false
 }

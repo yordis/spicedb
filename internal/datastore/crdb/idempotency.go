@@ -14,13 +14,13 @@ import (
 )
 
 func (cds *crdbDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	// Query by the dedicated idempotency_key column for efficient lookup
 	query := psql.Select(
 		schema.ColMetadata,
 		schema.ColExpiresAt,
 	).
 		From(schema.TableTransactionMetadata).
-		Where(sq.Expr("(metadata->>?) = ?", datastore.IdempotencyKeyMetadataKey, idempotencyKey)).
-		OrderBy(schema.ColExpiresAt + " DESC").
+		Where(sq.Eq{schema.ColIdempotencyKey: idempotencyKey}).
 		Limit(1)
 
 	sqlQuery, args, err := query.ToSql()
@@ -58,7 +58,7 @@ func (cds *crdbDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKe
 }
 
 func (cds *crdbDatastore) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
-	// CockroachDB implementation would insert into transaction_metadata table
-	// For now, this is a no-op
+	// The idempotency key is already stored when the transaction metadata is inserted.
+	// This method is a no-op for CockroachDB since the key is stored in the transaction_metadata row.
 	return nil
 }

@@ -59,6 +59,16 @@ func IsReplicationLagError(err error) bool {
 	return false
 }
 
+// IdempotencyKeyConstraintName is the name of the unique constraint on the idempotency_key column.
+const IdempotencyKeyConstraintName = "idx_idempotency_key"
+
+// IsIdempotencyKeyConstraintError returns true if the error is a unique constraint violation
+// on the idempotency_key column.
+func IsIdempotencyKeyConstraintError(err error) bool {
+	var pgerr *pgconn.PgError
+	return errors.As(err, &pgerr) && pgerr.Code == pgUniqueConstraintViolation && pgerr.ConstraintName == IdempotencyKeyConstraintName
+}
+
 // ConvertToWriteConstraintError converts the given Postgres error into a CreateRelationshipExistsError
 // if applicable. If not applicable, returns nils.
 func ConvertToWriteConstraintError(livingTupleConstraints []string, err error) error {
