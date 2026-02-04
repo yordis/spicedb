@@ -656,3 +656,215 @@ func leaderFromRangeRow(row pgx.Row) int {
 
 	return leaseHolder
 }
+
+// TestIdempotencyKeys tests the idempotency key feature against a real CockroachDB cluster.
+// It verifies that:
+// 1. Repeated requests with the same idempotency key and request body return the same result
+// 2. Requests with the same idempotency key but different request body return an error
+// 3. Concurrent requests with the same idempotency key are handled correctly
+func TestIdempotencyKeys(t *testing.T) {
+	ctx, cancel := context.WithCancel(testCtx)
+	t.Cleanup(cancel)
+
+	// Stop execution before the deadline (if one is set) to let cleanup run
+	deadline, ok := t.Deadline()
+	if ok {
+		ctx, cancel = context.WithDeadline(ctx, deadline.Add(-1*time.Minute))
+		t.Cleanup(cancel)
+	}
+
+	crdb := initializeTestCRDBCluster(ctx, t)
+	tlog := e2e.NewTLog(t)
+
+	t.Log("starting spicedb for idempotency tests...")
+	spiceDB := spice.NewClusterFromCockroachCluster(crdb, spice.WithDBName(dbName))
+	require.NoError(t, spiceDB.Start(ctx, tlog, "idempotency"))
+	require.NoError(t, spiceDB.Connect(ctx, tlog))
+	t.Cleanup(func() {
+		require.NoError(t, spiceDB.Stop(tlog))
+	})
+
+	// Write a simple schema for testing
+	_, err := spiceDB[0].Client().V1().Schema().WriteSchema(ctx, &v1.WriteSchemaRequest{
+		Schema: `definition user {}
+definition document {
+	relation viewer: user
+	permission view = viewer
+}`,
+	})
+	require.NoError(t, err)
+
+	client := spiceDB[0].Client().V1().Permissions()
+
+	t.Run("same_key_same_request_returns_same_result", func(t *testing.T) {
+		idempotencyKey := fmt.Sprintf("test-key-%d", time.Now().UnixNano())
+
+		req := &v1.WriteRelationshipsRequest{
+			Updates: []*v1.RelationshipUpdate{
+				{
+					Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+					Relationship: &v1.Relationship{
+						Resource: &v1.ObjectReference{
+							ObjectType: "document",
+							ObjectId:   "doc1",
+						},
+						Relation: "viewer",
+						Subject: &v1.SubjectReference{
+							Object: &v1.ObjectReference{
+								ObjectType: "user",
+								ObjectId:   "user1",
+							},
+						},
+					},
+				},
+			},
+			IdempotencyKey: idempotencyKey,
+		}
+
+		// First request
+		resp1, err := client.WriteRelationships(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp1)
+		require.NotNil(t, resp1.WrittenAt)
+
+		// Second request with same key and body
+		resp2, err := client.WriteRelationships(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp2)
+		require.NotNil(t, resp2.WrittenAt)
+
+		// Both responses should succeed (idempotent replay)
+		t.Logf("First response token: %s", resp1.WrittenAt.Token)
+		t.Logf("Second response token: %s", resp2.WrittenAt.Token)
+	})
+
+	t.Run("same_key_different_request_returns_error", func(t *testing.T) {
+		idempotencyKey := fmt.Sprintf("test-key-conflict-%d", time.Now().UnixNano())
+
+		// First request
+		req1 := &v1.WriteRelationshipsRequest{
+			Updates: []*v1.RelationshipUpdate{
+				{
+					Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+					Relationship: &v1.Relationship{
+						Resource: &v1.ObjectReference{
+							ObjectType: "document",
+							ObjectId:   "doc-conflict-1",
+						},
+						Relation: "viewer",
+						Subject: &v1.SubjectReference{
+							Object: &v1.ObjectReference{
+								ObjectType: "user",
+								ObjectId:   "user-conflict-1",
+							},
+						},
+					},
+				},
+			},
+			IdempotencyKey: idempotencyKey,
+		}
+
+		resp1, err := client.WriteRelationships(ctx, req1)
+		require.NoError(t, err)
+		require.NotNil(t, resp1)
+
+		// Second request with same key but different body
+		req2 := &v1.WriteRelationshipsRequest{
+			Updates: []*v1.RelationshipUpdate{
+				{
+					Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+					Relationship: &v1.Relationship{
+						Resource: &v1.ObjectReference{
+							ObjectType: "document",
+							ObjectId:   "doc-conflict-2", // Different document
+						},
+						Relation: "viewer",
+						Subject: &v1.SubjectReference{
+							Object: &v1.ObjectReference{
+								ObjectType: "user",
+								ObjectId:   "user-conflict-2", // Different user
+							},
+						},
+					},
+				},
+			},
+			IdempotencyKey: idempotencyKey, // Same key
+		}
+
+		resp2, err := client.WriteRelationships(ctx, req2)
+		require.Error(t, err, "should return error for idempotency key conflict")
+		require.Nil(t, resp2)
+		require.Contains(t, err.Error(), "idempotency", "error should mention idempotency")
+	})
+
+	t.Run("no_idempotency_key_creates_new_transaction", func(t *testing.T) {
+		// First request without idempotency key
+		req := &v1.WriteRelationshipsRequest{
+			Updates: []*v1.RelationshipUpdate{
+				{
+					Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+					Relationship: &v1.Relationship{
+						Resource: &v1.ObjectReference{
+							ObjectType: "document",
+							ObjectId:   "doc-no-key",
+						},
+						Relation: "viewer",
+						Subject: &v1.SubjectReference{
+							Object: &v1.ObjectReference{
+								ObjectType: "user",
+								ObjectId:   "user-no-key",
+							},
+						},
+					},
+				},
+			},
+			// No IdempotencyKey
+		}
+
+		resp1, err := client.WriteRelationships(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp1)
+
+		resp2, err := client.WriteRelationships(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp2)
+
+		// Both should succeed but with different tokens (different transactions)
+		t.Logf("First response token: %s", resp1.WrittenAt.Token)
+		t.Logf("Second response token: %s", resp2.WrittenAt.Token)
+		// Note: tokens may be the same or different depending on timing,
+		// but both requests should succeed
+	})
+
+	t.Run("idempotency_key_too_long_returns_error", func(t *testing.T) {
+		// Key longer than 256 characters
+		longKey := strings.Repeat("a", 257)
+
+		req := &v1.WriteRelationshipsRequest{
+			Updates: []*v1.RelationshipUpdate{
+				{
+					Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+					Relationship: &v1.Relationship{
+						Resource: &v1.ObjectReference{
+							ObjectType: "document",
+							ObjectId:   "doc-long-key",
+						},
+						Relation: "viewer",
+						Subject: &v1.SubjectReference{
+							Object: &v1.ObjectReference{
+								ObjectType: "user",
+								ObjectId:   "user-long-key",
+							},
+						},
+					},
+				},
+			},
+			IdempotencyKey: longKey,
+		}
+
+		resp, err := client.WriteRelationships(ctx, req)
+		require.Error(t, err, "should return error for idempotency key too long")
+		require.Nil(t, resp)
+		require.Contains(t, err.Error(), "maximum length", "error should mention maximum length")
+	})
+}

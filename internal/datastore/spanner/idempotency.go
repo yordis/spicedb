@@ -11,6 +11,14 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 )
 
+// CheckIdempotencyKey checks if an idempotency key exists and returns the stored result.
+// Returns nil if the key is not found.
+//
+// NOTE: This intentionally returns datastore.NoRevision for the Revision field.
+// The service layer will use HeadRevision() when NoRevision is returned. This design
+// choice avoids the "new enemy problem" where returning an older cached revision could
+// cause consistency issues. By always returning the latest revision, clients get a
+// safe, consistent view of the data.
 func (sd *spannerDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
 	// Query by the dedicated idempotency_key column for efficient lookup
 	stmt := spanner.Statement{

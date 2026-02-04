@@ -566,7 +566,8 @@ func (err IdempotencyConflictError) GRPCStatus() *status.Status {
 		spiceerrors.ForReason(
 			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
 			map[string]string{
-				"message": "idempotency key already used with different request body",
+				"idempotency_key": err.idempotencyKey,
+				"error_type":      "idempotency_conflict",
 			},
 		),
 	)
@@ -597,7 +598,8 @@ func (err InvalidIdempotencyKeyError) GRPCStatus() *status.Status {
 		spiceerrors.ForReason(
 			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
 			map[string]string{
-				"message": err.reason,
+				"error_type": "invalid_idempotency_key",
+				"reason":     err.reason,
 			},
 		),
 	)

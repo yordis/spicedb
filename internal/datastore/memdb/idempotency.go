@@ -13,6 +13,14 @@ type idempotencyCacheEntry struct {
 	expiresAt time.Time
 }
 
+// CheckIdempotencyKey checks if an idempotency key exists and returns the stored result.
+// Returns nil if the key is not found or if the key has expired.
+//
+// NOTE: This intentionally returns datastore.NoRevision for the Revision field.
+// The service layer will use HeadRevision() when NoRevision is returned. This design
+// choice avoids the "new enemy problem" where returning an older cached revision could
+// cause consistency issues. By always returning the latest revision, clients get a
+// safe, consistent view of the data.
 func (mds *memdbDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
 	mds.idempotencyMutex.RLock()
 	defer mds.idempotencyMutex.RUnlock()
@@ -31,9 +39,16 @@ func (mds *memdbDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyK
 		return nil, nil
 	}
 
-	return entry.result, nil
+	// Return NoRevision intentionally - service layer will use HeadRevision()
+	return &datastore.IdempotencyResult{
+		Revision:    datastore.NoRevision,
+		RequestHash: entry.result.RequestHash,
+		CreatedAt:   entry.result.CreatedAt,
+	}, nil
 }
 
+// StoreIdempotencyKey stores an idempotency key with a TTL.
+// For memdb, this stores the result in an in-memory cache with expiration.
 func (mds *memdbDatastore) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
 	mds.idempotencyMutex.Lock()
 	defer mds.idempotencyMutex.Unlock()
@@ -44,7 +59,7 @@ func (mds *memdbDatastore) StoreIdempotencyKey(ctx context.Context, idempotencyK
 
 	mds.idempotencyCache[idempotencyKey] = idempotencyCacheEntry{
 		result: &datastore.IdempotencyResult{
-			Revision:    revision,
+			Revision:    datastore.NoRevision,
 			RequestHash: requestHash,
 			CreatedAt:   time.Now(),
 		},

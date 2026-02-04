@@ -14,9 +14,17 @@ import (
 	"github.com/authzed/spicedb/pkg/datastore"
 )
 
+// CheckIdempotencyKey checks if an idempotency key exists and returns the stored result.
+// Returns nil if the key is not found.
+//
+// NOTE: This intentionally returns datastore.NoRevision for the Revision field.
+// The service layer will use HeadRevision() when NoRevision is returned. This design
+// choice avoids the "new enemy problem" where returning an older cached revision could
+// cause consistency issues. By always returning the latest revision, clients get a
+// safe, consistent view of the data.
 func (pgd *pgDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
 	// Query by the dedicated idempotency_key column for efficient lookup
-	query := psql.Select(schema.ColXID, schema.ColMetadata, schema.ColTimestamp).
+	query := psql.Select(schema.ColMetadata, schema.ColTimestamp).
 		From(schema.TableTransaction).
 		Where(sq.Eq{schema.ColIdempotencyKey: idempotencyKey}).
 		Limit(1)
@@ -26,11 +34,10 @@ func (pgd *pgDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey,
 		return nil, err
 	}
 
-	var xid xid8
 	var metadataJSON json.RawMessage
 	var timestamp time.Time
 
-	err = pgd.readPool.QueryRow(ctx, sqlQuery, args...).Scan(&xid, &metadataJSON, &timestamp)
+	err = pgd.readPool.QueryRow(ctx, sqlQuery, args...).Scan(&metadataJSON, &timestamp)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -50,7 +57,7 @@ func (pgd *pgDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey,
 	}
 
 	return &datastore.IdempotencyResult{
-		Revision:    postgresRevision{optionalTxID: xid},
+		Revision:    datastore.NoRevision,
 		RequestHash: storedHash,
 		CreatedAt:   timestamp,
 	}, nil
