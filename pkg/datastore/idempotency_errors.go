@@ -29,7 +29,7 @@ func (err IdempotencyKeyConflictError) GRPCStatus() *status.Status {
 		err,
 		codes.AlreadyExists,
 		spiceerrors.ForReason(
-			v1.ErrorReason_ERROR_REASON_ATTEMPT_TO_RECREATE_RELATIONSHIP,
+			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
 			map[string]string{
 				"idempotency_key": err.idempotencyKey,
 				"error_type":      "idempotency_conflict",

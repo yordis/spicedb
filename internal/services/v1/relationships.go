@@ -368,7 +368,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		if result != nil {
 			if result.RequestHash != requestHash {
 				idempotencyConflictCounter.Inc()
-				return nil, ps.rewriteError(ctx, NewIdempotencyConflictErr(idempotencyKey))
+				return nil, ps.rewriteError(ctx, datastore.NewIdempotencyKeyConflictError(idempotencyKey))
 			}
 
 			// Idempotency key found with matching hash - return cached result

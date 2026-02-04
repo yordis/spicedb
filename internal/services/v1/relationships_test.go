@@ -2414,8 +2414,10 @@ func TestWriteRelationshipsIdempotencyBasic(t *testing.T) {
 	req.NotNil(resp2)
 	token2 := resp2.WrittenAt
 
-	// Tokens should be the same
-	req.Equal(token1, token2)
+	// Both responses should have valid tokens
+	// Note: Tokens may differ because idempotent replays use HeadRevision() to avoid the "new enemy problem"
+	req.NotNil(token1)
+	req.NotNil(token2)
 
 	// Verify the relationship exists only once
 	listReq := &v1.ReadRelationshipsRequest{
@@ -2507,7 +2509,7 @@ func TestWriteRelationshipsIdempotencyConflict(t *testing.T) {
 
 	st, ok := status.FromError(err)
 	req.True(ok)
-	req.Equal(codes.InvalidArgument, st.Code())
+	req.Equal(codes.AlreadyExists, st.Code())
 	req.Contains(st.Message(), "idempotency")
 }
 

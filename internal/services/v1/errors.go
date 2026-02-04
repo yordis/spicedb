@@ -551,38 +551,6 @@ func (err TransactionMetadataTooLargeError) GRPCStatus() *status.Status {
 	)
 }
 
-// IdempotencyConflictError indicates that an idempotency key was used with different request body.
-type IdempotencyConflictError struct {
-	error
-	idempotencyKey string
-}
-
-// NewIdempotencyConflictErr constructs a new idempotency conflict error.
-func NewIdempotencyConflictErr(idempotencyKey string) IdempotencyConflictError {
-	return IdempotencyConflictError{
-		error:          fmt.Errorf("idempotency key %q already used with different request body", idempotencyKey),
-		idempotencyKey: idempotencyKey,
-	}
-}
-
-func (err IdempotencyConflictError) MarshalZerologObject(e *zerolog.Event) {
-	e.Err(err.error).Str("idempotency_key", err.idempotencyKey)
-}
-
-func (err IdempotencyConflictError) GRPCStatus() *status.Status {
-	return spiceerrors.WithCodeAndDetails(
-		err,
-		codes.InvalidArgument,
-		spiceerrors.ForReason(
-			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
-			map[string]string{
-				"idempotency_key": err.idempotencyKey,
-				"error_type":      "idempotency_conflict",
-			},
-		),
-	)
-}
-
 // InvalidIdempotencyKeyError indicates that an idempotency key has an invalid format.
 type InvalidIdempotencyKeyError struct {
 	error
