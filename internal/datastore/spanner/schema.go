@@ -34,6 +34,7 @@ const (
 
 	tableTransactionMetadata = "transaction_metadata"
 	colTransactionTag        = "transaction_tag"
+	colCreatedAt             = "created_at"
 	colMetadata              = "metadata"
 	colIdempotencyKey        = "idempotency_key"
 )

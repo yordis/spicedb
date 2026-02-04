@@ -326,7 +326,10 @@ func (cds *crdbDatastore) ReadWriteTx(
 	}
 
 	// Extract metadata before entering the transaction so we can access idempotency key for error handling
-	metadata := config.Metadata.AsMap()
+	metadata := map[string]any{}
+	if config.Metadata != nil && len(config.Metadata.GetFields()) > 0 {
+		metadata = config.Metadata.AsMap()
+	}
 
 	// Extract idempotency key/request hash from metadata if present (for use in error handling)
 	var idempotencyKey *string

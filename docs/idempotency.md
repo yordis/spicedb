@@ -88,11 +88,13 @@ When no idempotency key is provided:
 
 ## TTL and Cleanup
 
-Idempotency keys are stored for a configurable duration (default: 24 hours). After this period:
-- The key may be reused
-- Historical idempotency data is garbage collected
+Idempotency keys are retained for a configurable duration (default: 24 hours) where the datastore
+supports explicit TTL cleanup. For SQL and Spanner backends, retention is governed by the datastore's
+transaction metadata cleanup policy (for example, GC windows or row-deletion policies), which may be
+longer than the configured TTL. A key can be safely reused only after the underlying metadata row
+is removed.
 
-The TTL ensures that:
+Retention ensures that:
 - Storage requirements remain bounded
 - Old keys don't block new operations indefinitely
 - Reasonable retry windows are supported

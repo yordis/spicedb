@@ -531,6 +531,15 @@ func (ps *permissionServer) validateTransactionMetadata(metadata *structpb.Struc
 		return nil
 	}
 
+	if metadata.Fields != nil {
+		if _, exists := metadata.Fields[datastore.IdempotencyKeyMetadataKey]; exists {
+			return NewReservedTransactionMetadataKeyErr(datastore.IdempotencyKeyMetadataKey)
+		}
+		if _, exists := metadata.Fields[datastore.IdempotencyRequestHashMetadataKey]; exists {
+			return NewReservedTransactionMetadataKeyErr(datastore.IdempotencyRequestHashMetadataKey)
+		}
+	}
+
 	b, err := metadata.MarshalJSON()
 	if err != nil {
 		return err

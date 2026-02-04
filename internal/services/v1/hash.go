@@ -87,10 +87,27 @@ func computeWriteRelationshipsRequestHash(req *v1.WriteRelationshipsRequest) (st
 	sort.Strings(preconditionStrings)
 
 	return computeCallHash("v1.writerelationships", nil, map[string]any{
-		"updates":       strings.Join(updateStrings, ","),
-		"preconditions": strings.Join(preconditionStrings, ","),
+		"updates":       joinLengthPrefixed(updateStrings),
+		"preconditions": joinLengthPrefixed(preconditionStrings),
 		"metadata":      req.OptionalTransactionMetadata,
 	})
+}
+
+func joinLengthPrefixed(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	for i, value := range values {
+		if i > 0 {
+			b.WriteByte('|')
+		}
+		b.WriteString(strconv.Itoa(len(value)))
+		b.WriteByte(':')
+		b.WriteString(value)
+	}
+	return b.String()
 }
 
 func writeUpdateStringForHash(update *v1.RelationshipUpdate) (string, error) {

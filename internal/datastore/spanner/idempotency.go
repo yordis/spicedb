@@ -23,8 +23,9 @@ func (sd *spannerDatastore) CheckIdempotencyKey(ctx context.Context, idempotency
 	// Query by the dedicated idempotency_key column for efficient lookup
 	stmt := spanner.Statement{
 		SQL: fmt.Sprintf(
-			"SELECT %s FROM %s WHERE %s = @idempotencyKey LIMIT 1",
+			"SELECT %s, %s FROM %s WHERE %s = @idempotencyKey LIMIT 1",
 			colMetadata,
+			colCreatedAt,
 			tableTransactionMetadata,
 			colIdempotencyKey,
 		),
@@ -45,7 +46,8 @@ func (sd *spannerDatastore) CheckIdempotencyKey(ctx context.Context, idempotency
 	}
 
 	var metadataJSON spanner.NullJSON
-	if err := row.Columns(&metadataJSON); err != nil {
+	var createdAt time.Time
+	if err := row.Columns(&metadataJSON, &createdAt); err != nil {
 		return nil, err
 	}
 
@@ -66,7 +68,7 @@ func (sd *spannerDatastore) CheckIdempotencyKey(ctx context.Context, idempotency
 	return &datastore.IdempotencyResult{
 		Revision:    datastore.NoRevision,
 		RequestHash: storedHash,
-		CreatedAt:   time.Time{},
+		CreatedAt:   createdAt,
 	}, nil
 }
 
