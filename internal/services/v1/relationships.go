@@ -402,7 +402,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 			return nil, ps.rewriteError(ctx, err)
 		}
 
-		if err := ps.validateTransactionMetadata(metadataForWrite); err != nil {
+		if err := ps.validateTransactionMetadataSizeOnly(metadataForWrite); err != nil {
 			return nil, ps.rewriteError(ctx, err)
 		}
 	}
@@ -533,11 +533,19 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 }
 
 func (ps *permissionServer) validateTransactionMetadata(metadata *structpb.Struct) error {
+	return ps.validateTransactionMetadataWithReservedCheck(metadata, true)
+}
+
+func (ps *permissionServer) validateTransactionMetadataSizeOnly(metadata *structpb.Struct) error {
+	return ps.validateTransactionMetadataWithReservedCheck(metadata, false)
+}
+
+func (ps *permissionServer) validateTransactionMetadataWithReservedCheck(metadata *structpb.Struct, checkReserved bool) error {
 	if metadata == nil {
 		return nil
 	}
 
-	if metadata.Fields != nil {
+	if checkReserved && metadata.Fields != nil {
 		if _, exists := metadata.Fields[datastore.IdempotencyKeyMetadataKey]; exists {
 			return NewReservedTransactionMetadataKeyErr(datastore.IdempotencyKeyMetadataKey)
 		}
