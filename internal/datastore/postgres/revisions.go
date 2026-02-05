@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/ccoveille/go-safecast/v2"
 	"github.com/jackc/pgx/v5"
 
@@ -305,7 +306,23 @@ func createNewTransaction(ctx context.Context, tx pgx.Tx, metadata map[string]an
 		metadata = emptyMetadata
 	}
 
-	sql, args, err := createTxn.Values(metadata).Suffix("RETURNING " + schema.ColXID + ", " + schema.ColSnapshot + ", " + schema.ColTimestamp).ToSql()
+	// Extract idempotency key from metadata if present
+	var idempotencyKey *string
+	if key, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string); ok && key != "" {
+		idempotencyKey = &key
+	}
+
+	// Build the insert query with optional idempotency_key column
+	var insertBuilder sq.InsertBuilder
+	if idempotencyKey != nil {
+		insertBuilder = psql.Insert(schema.TableTransaction).
+			Columns(schema.ColMetadata, schema.ColIdempotencyKey).
+			Values(metadata, *idempotencyKey)
+	} else {
+		insertBuilder = createTxn.Values(metadata)
+	}
+
+	sql, args, err := insertBuilder.Suffix("RETURNING " + schema.ColXID + ", " + schema.ColSnapshot + ", " + schema.ColTimestamp).ToSql()
 	if err != nil {
 		return newXID, newSnapshot, timestamp, err
 	}

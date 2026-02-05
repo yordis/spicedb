@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	grpcvalidate "github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/validator"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -118,6 +121,15 @@ type PermissionsServerConfig struct {
 
 	// ExperimentalQueryPlan enables the experimental query plan for API calls.
 	ExperimentalQueryPlan bool
+
+	// IdempotencyKeyTTL is the duration to retain idempotency keys.
+	// Default: 24 hours.
+	IdempotencyKeyTTL time.Duration
+
+	// IdempotencyEnabled controls whether idempotency key support is enabled.
+	// Default: true (safe since it's opt-in via request field).
+	// Use pointer to distinguish between "not set" (nil, default true) and "explicitly false".
+	IdempotencyEnabled *bool
 }
 
 // NewPermissionsServer creates a PermissionsServiceServer instance.
@@ -144,6 +156,8 @@ func NewPermissionsServer(
 		PerformanceInsightMetricsEnabled:   config.PerformanceInsightMetricsEnabled,
 		EnableExperimentalLookupResources3: config.EnableExperimentalLookupResources3,
 		ExperimentalQueryPlan:              config.ExperimentalQueryPlan,
+		IdempotencyKeyTTL:                  defaultIfZero(config.IdempotencyKeyTTL, 24*time.Hour),
+		IdempotencyEnabled:                 boolPtrDefault(config.IdempotencyEnabled, true),
 	}
 
 	return &permissionServer{
@@ -325,6 +339,73 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 	ds := datastoremw.MustFromContext(ctx)
 
 	span := trace.SpanFromContext(ctx)
+
+	var requestHash string
+	var idempotencyKey string
+	metadataForWrite := req.OptionalTransactionMetadata
+
+	// Handle idempotency key if enabled and provided
+	if *ps.config.IdempotencyEnabled && req.IdempotencyKey != "" {
+		// Validate the idempotency key format
+		if err := validateIdempotencyKey(req.IdempotencyKey); err != nil {
+			return nil, ps.rewriteError(ctx, err)
+		}
+
+		var err error
+		requestHash, err = computeWriteRelationshipsRequestHash(req)
+		if err != nil {
+			return nil, ps.rewriteError(ctx, fmt.Errorf("failed to hash request: %w", err))
+		}
+
+		idempotencyKey = req.IdempotencyKey
+
+		// Check if this idempotency key was seen before
+		result, err := ds.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+		if err != nil {
+			return nil, ps.rewriteError(ctx, fmt.Errorf("failed to check idempotency key: %w", err))
+		}
+
+		if result != nil {
+			if result.RequestHash != requestHash {
+				idempotencyConflictCounter.Inc()
+				return nil, ps.rewriteError(ctx, datastore.NewIdempotencyKeyConflictError(idempotencyKey))
+			}
+
+			// Idempotency key found with matching hash - return cached result
+			idempotencyCacheHitCounter.Inc()
+			revision := result.Revision
+			if revision == datastore.NoRevision {
+				revision, err = ds.HeadRevision(ctx)
+				if err != nil {
+					return nil, ps.rewriteError(ctx, err)
+				}
+			}
+
+			zedToken, err := zedtoken.NewFromRevision(ctx, revision, ds)
+			if err != nil {
+				return nil, ps.rewriteError(ctx, err)
+			}
+
+			return &v1.WriteRelationshipsResponse{
+				WrittenAt: zedToken,
+			}, nil
+		}
+
+		idempotencyCacheMissCounter.Inc()
+
+		metadataForWrite, err = mergeTransactionMetadata(req.OptionalTransactionMetadata, map[string]string{
+			datastore.IdempotencyKeyMetadataKey:         idempotencyKey,
+			datastore.IdempotencyRequestHashMetadataKey: requestHash,
+			datastore.IdempotencyHashVersionMetadataKey: datastore.IdempotencyHashVersion,
+		})
+		if err != nil {
+			return nil, ps.rewriteError(ctx, err)
+		}
+
+		if err := ps.validateTransactionMetadataSizeOnly(metadataForWrite); err != nil {
+			return nil, ps.rewriteError(ctx, err)
+		}
+	}
 	// Ensure that the updates and preconditions are not over the configured limits.
 	if len(req.Updates) > int(ps.config.MaxUpdatesPerWrite) {
 		return nil, ps.rewriteError(
@@ -413,7 +494,7 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		errWrite := rwt.WriteRelationships(ctx, relUpdates)
 		span.AddEvent(otelconv.EventRelationshipsWritten)
 		return errWrite
-	}, options.WithMetadata(req.OptionalTransactionMetadata), options.WithIncludesExpiredAt(includesExpiresAt))
+	}, options.WithMetadata(metadataForWrite), options.WithIncludesExpiredAt(includesExpiresAt))
 	span.AddEvent(otelconv.EventRelationshipsReadWriteExecuted)
 	if err != nil {
 		return nil, ps.rewriteError(ctx, err)
@@ -434,14 +515,46 @@ func (ps *permissionServer) WriteRelationships(ctx context.Context, req *v1.Writ
 		return nil, ps.rewriteError(ctx, err)
 	}
 
+	// Store idempotency key if provided
+	if idempotencyKey != "" {
+		if err := ds.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ps.config.IdempotencyKeyTTL); err != nil {
+			idempotencyStoreErrorCounter.Inc()
+			// Don't fail the request, but record the error for observability
+			span.AddEvent("idempotency_key_storage_failed", trace.WithAttributes(
+				attribute.String("idempotency_key", idempotencyKey),
+				attribute.String("error", err.Error()),
+			))
+		}
+	}
+
 	return &v1.WriteRelationshipsResponse{
 		WrittenAt: zedToken,
 	}, nil
 }
 
 func (ps *permissionServer) validateTransactionMetadata(metadata *structpb.Struct) error {
+	return ps.validateTransactionMetadataWithReservedCheck(metadata, true)
+}
+
+func (ps *permissionServer) validateTransactionMetadataSizeOnly(metadata *structpb.Struct) error {
+	return ps.validateTransactionMetadataWithReservedCheck(metadata, false)
+}
+
+func (ps *permissionServer) validateTransactionMetadataWithReservedCheck(metadata *structpb.Struct, checkReserved bool) error {
 	if metadata == nil {
 		return nil
+	}
+
+	if checkReserved && metadata.Fields != nil {
+		if _, exists := metadata.Fields[datastore.IdempotencyKeyMetadataKey]; exists {
+			return NewReservedTransactionMetadataKeyErr(datastore.IdempotencyKeyMetadataKey)
+		}
+		if _, exists := metadata.Fields[datastore.IdempotencyRequestHashMetadataKey]; exists {
+			return NewReservedTransactionMetadataKeyErr(datastore.IdempotencyRequestHashMetadataKey)
+		}
+		if _, exists := metadata.Fields[datastore.IdempotencyHashVersionMetadataKey]; exists {
+			return NewReservedTransactionMetadataKeyErr(datastore.IdempotencyHashVersionMetadataKey)
+		}
 	}
 
 	b, err := metadata.MarshalJSON()
@@ -454,6 +567,31 @@ func (ps *permissionServer) validateTransactionMetadata(metadata *structpb.Struc
 	}
 
 	return nil
+}
+
+func mergeTransactionMetadata(base *structpb.Struct, extra map[string]string) (*structpb.Struct, error) {
+	if base == nil && len(extra) == 0 {
+		return nil, nil
+	}
+
+	var merged *structpb.Struct
+	if base == nil {
+		merged = &structpb.Struct{Fields: map[string]*structpb.Value{}}
+	} else {
+		merged = proto.Clone(base).(*structpb.Struct)
+		if merged.Fields == nil {
+			merged.Fields = map[string]*structpb.Value{}
+		}
+	}
+
+	for key, value := range extra {
+		if _, exists := merged.Fields[key]; exists {
+			return nil, NewReservedTransactionMetadataKeyErr(key)
+		}
+		merged.Fields[key] = structpb.NewStringValue(value)
+	}
+
+	return merged, nil
 }
 
 func (ps *permissionServer) DeleteRelationships(ctx context.Context, req *v1.DeleteRelationshipsRequest) (*v1.DeleteRelationshipsResponse, error) {
@@ -656,4 +794,54 @@ func labelsForFilter(filter *v1.RelationshipFilter) perfinsights.APIShapeLabels 
 		perfinsights.SubjectTypeLabel:      filter.OptionalSubjectFilter.SubjectType,
 		perfinsights.SubjectRelationLabel:  filter.OptionalSubjectFilter.OptionalRelation.Relation,
 	}
+}
+
+var (
+	idempotencyCacheHitCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "v1",
+		Name:      "idempotency_cache_hit_total",
+		Help:      "Total number of idempotency cache hits",
+	})
+
+	idempotencyCacheMissCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "v1",
+		Name:      "idempotency_cache_miss_total",
+		Help:      "Total number of idempotency cache misses",
+	})
+
+	idempotencyConflictCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "v1",
+		Name:      "idempotency_conflict_total",
+		Help:      "Total number of idempotency conflicts",
+	})
+
+	idempotencyStoreErrorCounter = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "spicedb",
+		Subsystem: "v1",
+		Name:      "idempotency_store_error_total",
+		Help:      "Total number of idempotency storage errors",
+	})
+)
+
+// MaxIdempotencyKeyLength is the maximum length allowed for idempotency keys.
+const MaxIdempotencyKeyLength = 256
+
+// validateIdempotencyKey validates the format of an idempotency key.
+// - Maximum length of 256 characters
+// - Must be valid UTF-8
+// - Cannot contain null characters
+func validateIdempotencyKey(key string) error {
+	if len(key) > MaxIdempotencyKeyLength {
+		return NewInvalidIdempotencyKeyErr(fmt.Sprintf("idempotency key exceeds maximum length of %d characters", MaxIdempotencyKeyLength))
+	}
+	if !utf8.ValidString(key) {
+		return NewInvalidIdempotencyKeyErr("idempotency key contains invalid UTF-8 characters")
+	}
+	if strings.ContainsRune(key, '\x00') {
+		return NewInvalidIdempotencyKeyErr("idempotency key contains null character")
+	}
+	return nil
 }

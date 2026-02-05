@@ -23,6 +23,18 @@ import (
 
 var Engines []string
 
+// IdempotencyResult represents the result of a stored idempotency key.
+type IdempotencyResult struct {
+	// Revision is the revision at which the write operation was executed.
+	Revision Revision
+
+	// RequestHash is the hash of the request body (excluding idempotency key).
+	RequestHash string
+
+	// CreatedAt is when the idempotency key was first stored.
+	CreatedAt time.Time
+}
+
 // SortedEngineIDs returns the full set of engine IDs, sorted.
 func SortedEngineIDs() []string {
 	engines := append([]string{}, Engines...)
@@ -739,6 +751,13 @@ type Datastore interface {
 	// ReadWriteTx starts a read/write transaction, which will be committed if no error is
 	// returned and rolled back if an error is returned.
 	ReadWriteTx(context.Context, TxUserFunc, ...options.RWTOptionsOption) (Revision, error)
+
+	// CheckIdempotencyKey checks if an idempotency key exists and returns the stored result.
+	// Returns nil if the key is not found.
+	CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*IdempotencyResult, error)
+
+	// StoreIdempotencyKey stores an idempotency key result with a TTL.
+	StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision Revision, ttl time.Duration) error
 }
 
 // ParsedExplain represents the parsed output of an EXPLAIN statement.

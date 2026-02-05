@@ -3,6 +3,7 @@ package indexcheck
 import (
 	"context"
 	"fmt"
+	"time"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 
@@ -97,6 +98,14 @@ func (p *indexcheckingProxy) ReadyState(ctx context.Context) (datastore.ReadySta
 }
 
 func (p *indexcheckingProxy) Close() error { return p.delegate.Close() }
+
+func (p *indexcheckingProxy) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	return p.delegate.CheckIdempotencyKey(ctx, idempotencyKey, requestHash)
+}
+
+func (p *indexcheckingProxy) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
+	return p.delegate.StoreIdempotencyKey(ctx, idempotencyKey, requestHash, revision, ttl)
+}
 
 type indexcheckingReader struct {
 	parent   datastore.SQLDatastore

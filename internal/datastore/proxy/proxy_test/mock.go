@@ -2,6 +2,7 @@ package proxy_test
 
 import (
 	"context"
+	"time"
 
 	"github.com/ccoveille/go-safecast/v2"
 	"github.com/stretchr/testify/mock"
@@ -99,6 +100,19 @@ func (dm *MockDatastore) Statistics(_ context.Context) (datastore.Stats, error) 
 
 func (dm *MockDatastore) Close() error {
 	args := dm.Called()
+	return args.Error(0)
+}
+
+func (dm *MockDatastore) CheckIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string) (*datastore.IdempotencyResult, error) {
+	args := dm.Called(idempotencyKey, requestHash)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*datastore.IdempotencyResult), args.Error(1)
+}
+
+func (dm *MockDatastore) StoreIdempotencyKey(ctx context.Context, idempotencyKey, requestHash string, revision datastore.Revision, ttl time.Duration) error {
+	args := dm.Called(idempotencyKey, requestHash, revision, ttl)
 	return args.Error(0)
 }
 

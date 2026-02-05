@@ -2370,3 +2370,394 @@ func TestReadRelationshipsWithTraitsAndFilters(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteRelationshipsIdempotencyBasic(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	conn, cleanup, ds, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	defer cleanup()
+
+	client := v1.NewPermissionsServiceClient(conn)
+
+	// Write a relationship with idempotency key
+	updateReq := &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{
+			{
+				Operation: v1.RelationshipUpdate_OPERATION_CREATE,
+				Relationship: &v1.Relationship{
+					Resource: &v1.ObjectReference{
+						ObjectType: "document",
+						ObjectId:   "doc1",
+					},
+					Relation: "viewer",
+					Subject: &v1.SubjectReference{
+						Object: &v1.ObjectReference{
+							ObjectType: "user",
+							ObjectId:   "user1",
+						},
+					},
+				},
+			},
+		},
+		IdempotencyKey: "test-key-1",
+	}
+
+	resp1, err := client.WriteRelationships(ctx, updateReq)
+	req.NoError(err)
+	req.NotNil(resp1)
+	token1 := resp1.WrittenAt
+
+	// Replay with same key and request
+	resp2, err := client.WriteRelationships(ctx, updateReq)
+	req.NoError(err)
+	req.NotNil(resp2)
+	token2 := resp2.WrittenAt
+
+	// Both responses should have valid tokens
+	// Note: Tokens may differ because idempotent replays use HeadRevision() to avoid the "new enemy problem"
+	req.NotNil(token1)
+	req.NotNil(token2)
+
+	rev1, _, err := zedtoken.DecodeRevision(token1, ds)
+	req.NoError(err)
+
+	rev2, _, err := zedtoken.DecodeRevision(token2, ds)
+	req.NoError(err)
+	req.False(rev2.LessThan(rev1))
+
+	// Verify the relationship exists only once
+	listReq := &v1.ReadRelationshipsRequest{
+		RelationshipFilter: &v1.RelationshipFilter{
+			ResourceType: "document",
+			OptionalResourceId: "doc1",
+		},
+	}
+
+	list, err := client.ReadRelationships(ctx, listReq)
+	req.NoError(err)
+
+	var rels []*v1.Relationship
+	for {
+		rel, err := list.Recv()
+		if err == io.EOF {
+			break
+		}
+		req.NoError(err)
+		rels = append(rels, rel.Relationship)
+	}
+
+	req.Len(rels, 1)
+	req.Equal("user1", rels[0].Subject.Object.ObjectId)
+}
+
+func TestWriteRelationshipsIdempotencyMetadata(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	conn, cleanup, _, beforeWriteRev := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	defer cleanup()
+
+	client := v1.NewPermissionsServiceClient(conn)
+	watchClient := v1.NewWatchServiceClient(conn)
+
+	updateReq := &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{
+			{
+				Operation: v1.RelationshipUpdate_OPERATION_CREATE,
+				Relationship: &v1.Relationship{
+					Resource: &v1.ObjectReference{
+						ObjectType: "document",
+						ObjectId:   "doc-metadata",
+					},
+					Relation: "viewer",
+					Subject: &v1.SubjectReference{
+						Object: &v1.ObjectReference{
+							ObjectType: "user",
+							ObjectId:   "user-metadata",
+						},
+					},
+				},
+			},
+		},
+		IdempotencyKey: "test-key-metadata",
+	}
+
+	_, err := client.WriteRelationships(ctx, updateReq)
+	req.NoError(err)
+
+	beforeWriteToken := zedtoken.MustNewFromRevisionForTesting(beforeWriteRev)
+	watchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	stream, err := watchClient.Watch(watchCtx, &v1.WatchRequest{OptionalStartCursor: beforeWriteToken})
+	req.NoError(err)
+
+	resp, err := stream.Recv()
+	req.NoError(err)
+	req.NotNil(resp.OptionalTransactionMetadata)
+
+	metadata := resp.OptionalTransactionMetadata.AsMap()
+	keyValue, ok := metadata[datastore.IdempotencyKeyMetadataKey].(string)
+	req.True(ok)
+	req.Equal("test-key-metadata", keyValue)
+
+	hashValue, ok := metadata[datastore.IdempotencyRequestHashMetadataKey].(string)
+	req.True(ok)
+	req.NotEmpty(hashValue)
+
+	versionValue, ok := metadata[datastore.IdempotencyHashVersionMetadataKey].(string)
+	req.True(ok)
+	req.Equal(datastore.IdempotencyHashVersion, versionValue)
+}
+
+func TestWriteRelationshipsIdempotencyConflict(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	defer cleanup()
+
+	client := v1.NewPermissionsServiceClient(conn)
+
+	// First write
+	updateReq1 := &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{
+			{
+				Operation: v1.RelationshipUpdate_OPERATION_CREATE,
+				Relationship: &v1.Relationship{
+					Resource: &v1.ObjectReference{
+						ObjectType: "document",
+						ObjectId:   "doc1",
+					},
+					Relation: "viewer",
+					Subject: &v1.SubjectReference{
+						Object: &v1.ObjectReference{
+							ObjectType: "user",
+							ObjectId:   "user1",
+						},
+					},
+				},
+			},
+		},
+		IdempotencyKey: "test-key-2",
+	}
+
+	resp1, err := client.WriteRelationships(ctx, updateReq1)
+	req.NoError(err)
+	req.NotNil(resp1)
+
+	// Different write with same idempotency key
+	updateReq2 := &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{
+			{
+				Operation: v1.RelationshipUpdate_OPERATION_CREATE,
+				Relationship: &v1.Relationship{
+					Resource: &v1.ObjectReference{
+						ObjectType: "document",
+						ObjectId:   "doc2",
+					},
+					Relation: "viewer",
+					Subject: &v1.SubjectReference{
+						Object: &v1.ObjectReference{
+							ObjectType: "user",
+							ObjectId:   "user2",
+						},
+					},
+				},
+			},
+		},
+		IdempotencyKey: "test-key-2",
+	}
+
+	resp2, err := client.WriteRelationships(ctx, updateReq2)
+	req.Error(err)
+	req.Nil(resp2)
+
+	st, ok := status.FromError(err)
+	req.True(ok)
+	req.Equal(codes.AlreadyExists, st.Code())
+	req.Contains(st.Message(), "idempotency")
+}
+
+func TestWriteRelationshipsIdempotencyKeyFormats(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	testCases := []struct {
+		name string
+		key  string
+	}{
+		{"UUID format", "550e8400-e29b-41d4-a716-446655440000"},
+		{"URL format", "https://example.com/event/12345"},
+		{"email format", "user@example.com"},
+		{"special characters", "event:123@domain!test"},
+		{"very long key", strings.Repeat("a", 200)},
+		{"empty key", ""},
+	}
+
+	for i, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+			defer cleanup()
+
+			client := v1.NewPermissionsServiceClient(conn)
+
+			updateReq := &v1.WriteRelationshipsRequest{
+				Updates: []*v1.RelationshipUpdate{
+					{
+						Operation: v1.RelationshipUpdate_OPERATION_CREATE,
+						Relationship: &v1.Relationship{
+							Resource: &v1.ObjectReference{
+								ObjectType: "document",
+								ObjectId:   fmt.Sprintf("doc%d", i),
+							},
+							Relation: "viewer",
+							Subject: &v1.SubjectReference{
+								Object: &v1.ObjectReference{
+									ObjectType: "user",
+									ObjectId:   fmt.Sprintf("user%d", i),
+								},
+							},
+						},
+					},
+				},
+				IdempotencyKey: tc.key,
+			}
+
+			resp, err := client.WriteRelationships(ctx, updateReq)
+
+			// All formats should work (empty key just means no idempotency)
+			req.NoError(err)
+			req.NotNil(resp)
+		})
+	}
+}
+
+func TestWriteRelationshipsIdempotencyWithoutKey(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	defer cleanup()
+
+	client := v1.NewPermissionsServiceClient(conn)
+
+	// Write without idempotency key - use TOUCH so it can be called multiple times
+	updateReq := &v1.WriteRelationshipsRequest{
+		Updates: []*v1.RelationshipUpdate{
+			{
+				Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+				Relationship: &v1.Relationship{
+					Resource: &v1.ObjectReference{
+						ObjectType: "document",
+						ObjectId:   "doc1",
+					},
+					Relation: "viewer",
+					Subject: &v1.SubjectReference{
+						Object: &v1.ObjectReference{
+							ObjectType: "user",
+							ObjectId:   "user1",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp1, err := client.WriteRelationships(ctx, updateReq)
+	req.NoError(err)
+	req.NotNil(resp1)
+
+	resp2, err := client.WriteRelationships(ctx, updateReq)
+	req.NoError(err)
+	req.NotNil(resp2)
+
+	// Without idempotency keys, tokens will be different (different revisions)
+	req.NotEqual(resp1.WrittenAt, resp2.WrittenAt)
+}
+
+func TestWriteRelationshipsIdempotencyKeyValidation(t *testing.T) {
+	req := require.New(t)
+	ctx := context.Background()
+
+	conn, cleanup, _, _ := testserver.NewTestServer(req, 0, memdb.DisableGC, true, tf.StandardDatastoreWithData)
+	defer cleanup()
+
+	client := v1.NewPermissionsServiceClient(conn)
+
+	testCases := []struct {
+		name        string
+		key         string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "key too long",
+			key:         strings.Repeat("a", 257),
+			expectError: true,
+			errorMsg:    "exceeds maximum length",
+		},
+		{
+			name:        "key at max length",
+			key:         strings.Repeat("a", 256),
+			expectError: false,
+		},
+		{
+			name:        "key with null character",
+			key:         "test\x00key",
+			expectError: true,
+			errorMsg:    "null character",
+		},
+		{
+			name:        "valid key with unicode",
+			key:         "test-key-日本語",
+			expectError: false,
+		},
+		{
+			name:        "valid key with special chars",
+			key:         "test-key_123!@#$%",
+			expectError: false,
+		},
+	}
+
+	for i, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			updateReq := &v1.WriteRelationshipsRequest{
+				Updates: []*v1.RelationshipUpdate{
+					{
+						Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+						Relationship: &v1.Relationship{
+							Resource: &v1.ObjectReference{
+								ObjectType: "document",
+								ObjectId:   fmt.Sprintf("docval%d", i),
+							},
+							Relation: "viewer",
+							Subject: &v1.SubjectReference{
+								Object: &v1.ObjectReference{
+									ObjectType: "user",
+									ObjectId:   fmt.Sprintf("userval%d", i),
+								},
+							},
+						},
+					},
+				},
+				IdempotencyKey: tc.key,
+			}
+
+			resp, err := client.WriteRelationships(ctx, updateReq)
+
+			if tc.expectError {
+				req.Error(err)
+				req.Nil(resp)
+				st, ok := status.FromError(err)
+				req.True(ok)
+				req.Equal(codes.InvalidArgument, st.Code())
+				req.Contains(st.Message(), tc.errorMsg)
+			} else {
+				req.NoError(err)
+				req.NotNil(resp)
+			}
+		})
+	}
+}

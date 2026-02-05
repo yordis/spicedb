@@ -36,6 +36,7 @@ const (
 	ColCounterFilter       = "serialized_filter"
 	ColCounterCurrentCount = "current_count"
 	ColCounterSnapshot     = "updated_revision_snapshot"
+	ColIdempotencyKey      = "idempotency_key"
 )
 
 func Schema(colOptimizationOpt common.ColumnOptimizationOption, expirationDisabled bool) *common.SchemaInformation {

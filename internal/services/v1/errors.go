@@ -475,11 +475,53 @@ func defaultIfZero[T comparable](value T, defaultValue T) T {
 	return value
 }
 
+// boolPtrDefault returns a pointer to the default value if the input is nil,
+// otherwise returns the input pointer. This allows distinguishing between
+// "not set" (nil, use default) and "explicitly set to false".
+func boolPtrDefault(value *bool, defaultValue bool) *bool {
+	if value == nil {
+		return &defaultValue
+	}
+	return value
+}
+
+
 // TransactionMetadataTooLargeError indicates that the metadata for a transaction is too large.
 type TransactionMetadataTooLargeError struct {
 	error
 	metadataSize int
 	maxSize      int
+}
+
+// ReservedTransactionMetadataKeyError indicates a reserved metadata key was provided by the caller.
+type ReservedTransactionMetadataKeyError struct {
+	error
+	key string
+}
+
+// NewReservedTransactionMetadataKeyErr constructs a new reserved metadata key error.
+func NewReservedTransactionMetadataKeyErr(key string) ReservedTransactionMetadataKeyError {
+	return ReservedTransactionMetadataKeyError{
+		error: fmt.Errorf("transaction metadata key %q is reserved", key),
+		key:   key,
+	}
+}
+
+func (err ReservedTransactionMetadataKeyError) MarshalZerologObject(e *zerolog.Event) {
+	e.Err(err.error).Str("metadata_key", err.key)
+}
+
+func (err ReservedTransactionMetadataKeyError) GRPCStatus() *status.Status {
+	return spiceerrors.WithCodeAndDetails(
+		err,
+		codes.InvalidArgument,
+		spiceerrors.ForReason(
+			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
+			map[string]string{
+				"message": "transaction metadata key is reserved",
+			},
+		),
+	)
 }
 
 // NewTransactionMetadataTooLargeErr constructs a new transaction metadata too large error.
@@ -504,6 +546,38 @@ func (err TransactionMetadataTooLargeError) GRPCStatus() *status.Status {
 			map[string]string{
 				"metadata_byte_size":                 strconv.Itoa(err.metadataSize),
 				"maximum_allowed_metadata_byte_size": strconv.Itoa(err.maxSize),
+			},
+		),
+	)
+}
+
+// InvalidIdempotencyKeyError indicates that an idempotency key has an invalid format.
+type InvalidIdempotencyKeyError struct {
+	error
+	reason string
+}
+
+// NewInvalidIdempotencyKeyErr constructs a new invalid idempotency key error.
+func NewInvalidIdempotencyKeyErr(reason string) InvalidIdempotencyKeyError {
+	return InvalidIdempotencyKeyError{
+		error:  fmt.Errorf("invalid idempotency key: %s", reason),
+		reason: reason,
+	}
+}
+
+func (err InvalidIdempotencyKeyError) MarshalZerologObject(e *zerolog.Event) {
+	e.Err(err.error).Str("reason", err.reason)
+}
+
+func (err InvalidIdempotencyKeyError) GRPCStatus() *status.Status {
+	return spiceerrors.WithCodeAndDetails(
+		err,
+		codes.InvalidArgument,
+		spiceerrors.ForReason(
+			v1.ErrorReason_ERROR_REASON_UNSPECIFIED,
+			map[string]string{
+				"error_type": "invalid_idempotency_key",
+				"reason":     err.reason,
 			},
 		),
 	)
